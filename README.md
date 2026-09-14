@@ -28,7 +28,7 @@ The game never contacts a server at runtime. Two ways to run it with no network 
 
 ### Desktop test mode
 
-Open the page in a desktop browser. Drag to look, click to press, drag on dials / levers / joysticks / cables. Shortcuts: `1`–`5` pick a role, `R` recenters, `Enter` advances READY → ENGAGE.
+Open the page in a desktop browser. Drag to look, click to press, drag on dials / levers / joysticks / cables. Shortcuts: `1`–`5` pick a role, `R` recenters, `Enter` advances READY → ENGAGE, `Esc` opens the pause menu (Resume / Main Menu · Change Role). In VR, the Quest **B** (right) or **Y** (left) button toggles the same menu.
 
 ---
 
@@ -39,10 +39,11 @@ Room (no headsets)   Assign 1 Captain + Helm, Tactical, Science, Engineering. Si
 Role select          Briefing podium: tap your pre-assigned role plate.        (RoleSelectPodium)
 Calibrate            The station loads; tap RECENTER SEATED VIEW until the console is square in front of you,
                      then STATION READY.                                       (StandbyPedestal, XRRig.recenter)
-Standby              High-contrast STANDBY / WAITING FOR ENGAGE display + massive ENGAGE button.
+Standby              High-contrast STANDBY / WAITING FOR ENGAGE display + ENGAGE button.
 ENGAGE               Captain counts aloud. All 5 tap together. Each headset's TimerManager starts at t = 00:00.
 Running              Scenario injects fire at exact timestamps. Captain speaks Situation / Intent / Directives with
                      embedded keys; crew executes on physical controls; stations verify locally.
+                     B / Y (Quest) or Esc opens pause → Resume or Main Menu / Change Role.
 Complete             MISSION SUCCESS / FAILED banner + per-station grade. STAND DOWN returns to role select.
 ```
 
@@ -100,10 +101,11 @@ tests/sim.test.mjs              `npm test`
 
 ### Local truth + closed-loop CRM
 
-Each headset runs its own `ShipState` and only sees its own console. Two mechanics make cross-station consequences work with no data link:
+Each headset runs its own `ShipState` and only sees its own console. Three mechanics make cross-station consequences work with no data link:
 
 - **Branch grouping.** Only the Captain's headset knows which route was chosen. On crew headsets, all alternatives for a decision are merged into one task ("ASTEROID — AWAIT DIRECTIVE"). It succeeds when *any* alternative verifies (the operator did what the Captain actually ordered) **or** when the operator presses **ACK STANDBY** inside the window (the Captain told them to stand by). Failing to do either applies the penalty locally.
-- **Captain debrief nodes.** After each execution window the Holo-Table raises CREW REPORT nodes (CLEARED / IMPACT, DRONE DESTROYED / WE TOOK THE HIT). The Captain asks the crew, taps the answer, and the Captain's global ship health reflects the room's reality.
+- **Readback verification (`src/sim/Readback.js`).** Every crew console has a live **CONFIG CODE** readout (e.g. `T-034000-L`) that losslessly encodes its current configuration: auth keys accepted, dial frequencies, heading/pitch/throttle, cable routing, breakers, thermal. When a station has executed a directive the operator reads the code to the Captain, who types it on the base-32 keypad at the Holo-Table. The Captain's headset decodes the exact configuration and compares it with what the *chosen route* requires. The verification screen shows **VERIFIED**, or **CORRECTION NEEDED** with the offending field, its actual vs. required value, and a hint to relay ("Tell them: enter ALPHA-1 on the auth keypad…"). A weighted checksum catches misheard characters (**GARBLED — REPEAT**) instead of producing a false correction; the alphabet omits I and O. Roles with no task on the chosen route report **STANDBY · N/A**. Each phase has a Captain task to verify all tasked stations before the window closes.
+- **Captain debrief nodes.** After each execution window the Holo-Table raises CREW REPORT nodes (CLEARED / IMPACT, DRONE DESTROYED / WE TOOK THE HIT). If every tasked station was verified by readback, the report auto-resolves to the success option; otherwise the Captain asks the crew, taps the answer, and the Captain's global ship health reflects the room's reality.
 
 ### Rendering budget (standalone headsets)
 

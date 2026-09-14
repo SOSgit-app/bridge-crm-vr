@@ -7,6 +7,7 @@ import { DamageFX } from '../environment/Particles.js';
 import { TimerManager } from '../sim/TimerManager.js';
 import { sfx } from '../core/Audio.js';
 import { bus } from '../core/EventBus.js';
+import { SCHEMAS, encodeReadback } from '../sim/Readback.js';
 
 /**
  * Common station plumbing: operator-local coordinate frame at the seat,
@@ -120,6 +121,33 @@ export class StationBase {
     this.alarmLight = new IndicatorLight({ radius: 0.014, light: true, lightRange: 1.4, lightIntensity: 1.6, label: 'MASTER ALARM' });
     this.alarmLight.group.position.set(-0.065, 0, 0.004);
     this.addIndicator(this.alarmLight, ackMount);
+
+    // Live CONFIG CODE readout: encodes this station's current configuration
+    // so the operator can read it to the Captain for verification.
+    if (SCHEMAS[this.role]) {
+      this.readbackCode = null;
+      this._codeFlash = 0;
+      this.codeScreen = new ScreenPanel({ width: 0.2, height: 0.058, px: 512, bezel: 0.005, depth: 0.014, name: `${this.role}-code`, tint: this.tintHex() });
+      this.codeScreen.group.position.set(0, -0.075, 0.018);
+      this.codeScreen.group.rotation.x = 0.55;
+      this.codeScreen.setDraw((ctx, w, h, p) => {
+        const fresh = this._codeFlash > 0;
+        p.text('CONFIG CODE', 10, 6, { size: h * 0.2, color: PALETTE.screenDim });
+        p.text('READ TO CAPTAIN', w - 10, 6, { size: h * 0.2, color: fresh ? PALETTE.amber : PALETTE.screenDim, align: 'right' });
+        p.text(this.readbackCode ?? '— — —', w / 2, h * 0.36, { size: h * 0.5, align: 'center', color: fresh ? PALETTE.amber : PALETTE.white, weight: 'bold' });
+      });
+      this.addScreen(this.codeScreen, ackMount);
+    }
+  }
+
+  _refreshReadbackCode() {
+    if (!this.codeScreen) return;
+    const code = encodeReadback(this.role, this.values, this.ship);
+    if (code !== this.readbackCode) {
+      this.readbackCode = code;
+      this._codeFlash = 1.5;
+      this.codeScreen.invalidate();
+    }
   }
 
   attachEngine(engine) {
@@ -247,6 +275,11 @@ export class StationBase {
     if (this._statusClock > 0.25) {
       this._statusClock = 0;
       this.status.invalidate();
+      this._refreshReadbackCode();
+    }
+    if (this._codeFlash > 0) {
+      this._codeFlash -= dt;
+      if (this._codeFlash <= 0) this.codeScreen?.invalidate();
     }
     for (const s of this.screens) s.render();
   }

@@ -10,7 +10,7 @@ import { sfx } from '../core/Audio.js';
  * Calibration + Standby pedestal that rises between the operator and their
  * console. Phase 1 (CALIBRATE): RECENTER SEATED VIEW + STATION READY.
  * Phase 2 (STANDBY): high-contrast WAITING FOR ENGAGE display, readiness
- * indicator and the massive ENGAGE button the whole crew taps on "3-2-1".
+ * indicator and the ENGAGE button the whole crew taps on "3-2-1".
  */
 export class StandbyPedestal {
   constructor({ role, interaction, seated, onRecenter, onReady, onEngage }) {
@@ -22,7 +22,9 @@ export class StandbyPedestal {
     this.group = new THREE.Group();
     this.group.name = 'StandbyPedestal';
     const topY = seated ? 0.82 : 1.05;
-    this.group.position.set(0, 0, -0.42);
+    this.topY = topY;
+    this.restY = 0;
+    this.group.position.set(0, this.restY, -0.42);
     this.rise = 0;
     this.targetRise = 1;
     this._t = 0;
@@ -48,9 +50,9 @@ export class StandbyPedestal {
     this.screen.group.rotation.x = -0.2;
     this.group.add(this.screen.group);
 
-    // Massive ENGAGE button (hidden until READY)
+    // ENGAGE button (hidden until READY) — palm-sized, not desk-filling
     this.engage = new PushButton({
-      width: 0.3, height: 0.3, depth: 0.05, shape: 'round', color: 0x3a1418, glow: 0xff4c5b, name: 'engage',
+      width: 0.11, height: 0.11, depth: 0.028, shape: 'round', color: 0x3a1418, glow: 0xff4c5b, name: 'engage',
       onPress: () => {
         if (this.phase !== 'STANDBY' || this.engaged) return;
         this.engaged = true;
@@ -63,9 +65,9 @@ export class StandbyPedestal {
     face.add(this.engage.root);
     interaction.add(this.engage);
     this.controls.push(this.engage);
-    this.engageLabel = engraved('ENGAGE', 0.04);
+    this.engageLabel = engraved('ENGAGE', 0.016);
     // Round caps are rotated cylinders, so the legend goes on the button root.
-    this.engageLabel.position.set(0, 0, 0.0505);
+    this.engageLabel.position.set(0, 0, 0.0285);
     this.engage.root.add(this.engageLabel);
 
     // Calibration controls
@@ -98,7 +100,9 @@ export class StandbyPedestal {
     this.light = new THREE.PointLight(0xffffff, 0.8, 2.0, 2);
     this.light.position.set(0, topY + 0.4, 0.2);
     this.group.add(this.light);
-    this.group.scale.set(1, 0.001, 1);
+    // Start fully retracted below the floor; rise slides it up (no Y-squash).
+    this.group.position.y = this.restY - this.topY - 0.2;
+    this.group.visible = false;
   }
 
   setPhase(phase) {
@@ -116,6 +120,11 @@ export class StandbyPedestal {
   }
 
   hide() {
+    // ENGAGE vanishes immediately — pedestal then slides under the deck.
+    this.engage.root.visible = false;
+    this.engage.setEnabled(false);
+    this.engaged = true;
+    for (const c of this.controls) c.setEnabled(false);
     this.targetRise = 0;
   }
 
@@ -138,6 +147,7 @@ export class StandbyPedestal {
     this.readyLight.set(summary.success ? 'green' : 'red', !summary.success);
     this.light.color.setHex(summary.success ? 0x4dff88 : 0xff4c5b);
     this.light.intensity = 1.4;
+    this.group.visible = true;
     this.targetRise = 1;
     this.screen.invalidate();
   }
@@ -145,9 +155,13 @@ export class StandbyPedestal {
   update(dt) {
     this._t += dt;
     this.rise += (this.targetRise - this.rise) * Math.min(1, dt * 5);
-    this.group.scale.y = Math.max(0.001, this.rise);
+    // Slide the whole pedestal up/down; never squash it into the floor.
+    const buried = this.topY + 0.2;
+    this.group.position.y = this.restY - (1 - this.rise) * buried;
+    if (this.targetRise > 0.5 && this.rise > 0.02) this.group.visible = true;
+    if (this.targetRise < 0.5 && this.rise < 0.05) this.group.visible = false;
     this.readyLight.update(dt);
-    if (this.phase === 'STANDBY' && !this.engaged) {
+    if (this.phase === 'STANDBY' && !this.engaged && this.engage.root.visible) {
       const pulse = 0.5 + 0.5 * Math.sin(this._t * 4);
       this.engage.capMat.emissiveIntensity = 0.5 + pulse * 1.2;
       this.light.intensity = 0.6 + pulse * 1.4;

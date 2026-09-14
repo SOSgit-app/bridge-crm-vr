@@ -1,6 +1,7 @@
 import { EventBus } from '../core/EventBus.js';
 import { ROLES } from '../core/Constants.js';
 import { gradeFromTasks } from './Verification.js';
+import { ReadbackTracker } from './Readback.js';
 
 /**
  * Runs a time-coded scenario against the local ShipState and the local
@@ -27,6 +28,9 @@ export class ScenarioEngine {
     this.finished = false;
     this.messages = []; // recent alerts for this station
     this._unsubStep = null;
+    // Captain-only: crew readback verification windows
+    this.readback = new ReadbackTracker(scenario.readbacks ?? []);
+    this.lastReadback = null;
   }
 
   get ctx() {
@@ -39,6 +43,7 @@ export class ScenarioEngine {
       choices: this.choices,
       engine: this,
       chose: (decisionId, optionId) => this.choices[decisionId] === optionId,
+      readback: this.readback,
     };
   }
 
@@ -59,6 +64,11 @@ export class ScenarioEngine {
       if (this.role !== ROLES.CAPTAIN) continue;
       this.timer.at(db.t, () => this._openDebrief(db), db.id);
       if (db.until) this.timer.at(db.until, () => this._closeDebrief(db), `${db.id}:close`);
+    }
+    for (const rb of s.readbacks ?? []) {
+      if (this.role !== ROLES.CAPTAIN) continue;
+      this.timer.at(rb.from, () => this._openReadback(rb), `rb:${rb.id}`);
+      this.timer.at(rb.until, () => this._closeReadback(rb), `rb:${rb.id}:close`);
     }
     for (const task of this.tasks) {
       this.timer.at(task.from, () => this._activateTask(task), `${task.id}:open`);
@@ -186,9 +196,45 @@ export class ScenarioEngine {
     }
   }
 
+  // ---- Readback verification (Captain) ---------------------------------
+
+  _openReadback(rb) {
+    this.readback.open(rb, this.timer.t);
+    this.events.emit('readback', { type: 'open', window: rb });
+  }
+
+  _closeReadback(rb) {
+    this.readback.close(rb);
+    const verified = this.readback.allVerified(rb.id, this.ctx);
+    this.ship.logEvent(this.timer.t, `READBACK ${rb.id}: ${verified ? 'all stations verified' : 'window closed unverified'}`, verified ? 'ok' : 'warn');
+    this.events.emit('readback', { type: 'close', window: rb, verified });
+  }
+
+  /**
+   * Captain types a crew station's CONFIG CODE. Decodes it locally and
+   * compares against what the chosen route requires. Returns the result
+   * record (state: verified | correction | garbled | standby | no-window | no-route).
+   */
+  submitReadback(code) {
+    const res = this.readback.submit(code, this.ctx);
+    this.lastReadback = res;
+    const t = this.timer.t;
+    if (res.state === 'verified') this.ship.logEvent(t, `READBACK ${res.role}: VERIFIED (${res.code})`, 'ok');
+    else if (res.state === 'correction') this.ship.logEvent(t, `READBACK ${res.role}: CORRECTION — ${res.hints[0]?.label}`, 'warn');
+    else if (res.state === 'garbled') this.ship.logEvent(t, `READBACK: garbled code`, 'warn');
+    this.events.emit('readback', { type: 'result', result: res, window: this.readback.active });
+    return res;
+  }
+
   _openDebrief(db) {
     this.activeDebrief = { ...db, chosen: null };
     this.events.emit('debrief', this.activeDebrief);
+    // Closed-loop shortcut: if every involved station verified by readback,
+    // the crew report resolves itself to the success option.
+    if (db.readback && db.autoSuccess && this.readback.allVerified(db.readback, this.ctx)) {
+      this.ship.logEvent(this.timer.t, `CREW REPORT ${db.id}: auto-cleared by verified readbacks`, 'ok');
+      this.debrief(db.id, db.autoSuccess);
+    }
   }
 
   debrief(debriefId, optionId) {

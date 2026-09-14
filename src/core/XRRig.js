@@ -67,6 +67,13 @@ export class XRRig {
       const ray = buildRay();
       controller.add(ray);
       controller.userData.ray = ray;
+      controller.addEventListener('connected', (e) => {
+        controller.userData.inputSource = e.data;
+        controller.userData.handedness = e.data?.handedness ?? null;
+      });
+      controller.addEventListener('disconnected', () => {
+        controller.userData.inputSource = null;
+      });
       this.rig.add(controller);
       this.controllers.push(controller);
 
@@ -80,6 +87,9 @@ export class XRRig {
       this.rig.add(hand);
       this.hands.push(hand);
     }
+
+    // Rising-edge latch for Quest B (right) / Y (left) — xr-standard buttons[5].
+    this._menuHeld = false;
   }
 
   _onResize() {
@@ -90,6 +100,22 @@ export class XRRig {
 
   get inXR() {
     return this.renderer.xr.isPresenting;
+  }
+
+  /**
+   * True once when B (right Quest) or Y (left Quest) is freshly pressed.
+   * xr-standard gamepad: buttons[5] is the secondary face button.
+   */
+  pollMenuButton() {
+    let down = false;
+    for (const c of this.controllers) {
+      const pad = c.userData.inputSource?.gamepad;
+      if (!pad?.buttons?.[5]) continue;
+      if (pad.buttons[5].pressed) down = true;
+    }
+    const edge = down && !this._menuHeld;
+    this._menuHeld = down;
+    return edge;
   }
 
   /** Head pose in world space (works both in XR and on desktop). */

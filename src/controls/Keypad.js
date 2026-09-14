@@ -5,44 +5,58 @@ import { MAT } from './Materials.js';
 import { sfx } from '../core/Audio.js';
 import { PALETTE } from '../core/Constants.js';
 
+const LAYOUTS = {
+  alnum: [
+    ['1', '2', '3', 'A'],
+    ['4', '5', '6', 'B'],
+    ['7', '8', '9', 'C'],
+    ['CLR', '0', '-', 'D'],
+    ['E', 'F', 'G', 'ENT'],
+  ],
+  numeric: [
+    ['1', '2', '3'],
+    ['4', '5', '6'],
+    ['7', '8', '9'],
+    ['CLR', '0', 'ENT'],
+  ],
+  // Readback alphabet (no I / O) — matches src/sim/Readback.js ALPHABET.
+  base32: [
+    ['0', '1', '2', '3', '4', '5', '6', '7'],
+    ['8', '9', 'A', 'B', 'C', 'D', 'E', 'F'],
+    ['G', 'H', 'J', 'K', 'L', 'M', 'N', 'P'],
+    ['Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X'],
+    ['CLR', null, null, null, null, null, null, 'ENT'],
+  ],
+};
+
 /**
  * A physical alphanumeric keypad with a recessed readout. Emits the buffered
  * string on ENTER; the owner decides whether it is a valid authorization key.
  */
 export class Keypad {
-  constructor({ interaction, maxLength = 8, onEnter = null, keys = 'alnum', name = 'keypad' } = {}) {
+  constructor({ interaction, maxLength = 8, onEnter = null, keys = 'alnum', name = 'keypad', okText = 'ACCEPTED', badText = 'REJECTED', title = null, buttonSize = 0.034 } = {}) {
     this.group = new THREE.Group();
     this.group.name = name;
     this.buffer = '';
     this.maxLength = maxLength;
     this.onEnter = onEnter;
+    this.okText = okText;
+    this.badText = badText;
     this.status = null; // null | 'ok' | 'bad'
     this.statusTimer = 0;
     this.buttons = [];
     this.locked = false;
 
-    const layout =
-      keys === 'alnum'
-        ? [
-            ['1', '2', '3', 'A'],
-            ['4', '5', '6', 'B'],
-            ['7', '8', '9', 'C'],
-            ['CLR', '0', '-', 'D'],
-            ['E', 'F', 'G', 'ENT'],
-          ]
-        : [
-            ['1', '2', '3'],
-            ['4', '5', '6'],
-            ['7', '8', '9'],
-            ['CLR', '0', 'ENT'],
-          ];
+    const layout = Array.isArray(keys) ? keys : LAYOUTS[keys] ?? LAYOUTS.numeric;
 
-    const bw = 0.034;
+    const bw = buttonSize;
     const gap = 0.006;
-    const cols = layout[0].length;
+    const cols = Math.max(...layout.map((r) => r.length));
     const rows = layout.length;
     const totalW = cols * bw + (cols - 1) * gap;
     const totalH = rows * bw + (rows - 1) * gap;
+    this.width = totalW + 0.03;
+    this.height = totalH + 0.09;
 
     const plate = new THREE.Mesh(new THREE.BoxGeometry(totalW + 0.03, totalH + 0.09, 0.012), MAT.panel.clone());
     plate.material.vertexColors = false;
@@ -54,7 +68,8 @@ export class Keypad {
     this.display.group.position.set(0, totalH / 2 + 0.03, 0.004);
     this.display.setDraw((ctx, w, h, p) => {
       const color = this.status === 'ok' ? PALETTE.green : this.status === 'bad' ? PALETTE.red : PALETTE.screenFg;
-      const shown = this.status === 'ok' ? 'ACCEPTED' : this.status === 'bad' ? 'REJECTED' : this.buffer || '_';
+      const shown = this.status === 'ok' ? this.okText : this.status === 'bad' ? this.badText : this.buffer || '_';
+      if (title && !this.status) p.text(title, w - 10, h * 0.3, { size: h * 0.32, color: PALETTE.screenDim, align: 'right' });
       p.text(shown, 10, h * 0.2, { size: h * 0.6, color, weight: 'bold' });
       if (this.locked) p.text('LOCKED', w - 10, h * 0.25, { size: h * 0.45, color: PALETTE.red, align: 'right' });
     });
@@ -62,6 +77,7 @@ export class Keypad {
 
     layout.forEach((row, r) => {
       row.forEach((k, c) => {
+        if (k == null) return;
         const isEnter = k === 'ENT';
         const isClr = k === 'CLR';
         const b = new PushButton({

@@ -6,6 +6,7 @@ import { ScenarioEngine } from '../src/sim/ScenarioEngine.js';
 import { verifyCode, verifyHeading, verifyDial, headingError, gradeFromTasks } from '../src/sim/Verification.js';
 import { shakedown, KEYS } from '../src/scenario/shakedown.js';
 import { ROLES } from '../src/core/Constants.js';
+import { encodeReadback, decodeReadback, compareReadback } from '../src/sim/Readback.js';
 
 // Minimal station stub matching the StationBase contract the engine relies on.
 function stationStub(values = {}) {
@@ -165,6 +166,119 @@ test('Scenario: Captain decision gates alternatives and generates keys', () => {
   engine.choose('drone', 'kinetic');
   assert.equal(engine.choices.drone, 'kinetic');
   assert.equal(decision.options.find((o) => o.id === 'kinetic').code, 'DELTA-9');
+});
+
+// ---- Readback verification ---------------------------------------------
+
+test('Readback: every station round-trips its configuration losslessly', () => {
+  const ship = new ShipState();
+  ship.attitude.bearing = 327;
+  ship.attitude.pitch = -12;
+  ship.throttle = 1;
+  ship.power.WEAPONS = true;
+  ship.breakers.BOOST = true;
+  ship.thermal = 88;
+
+  const helm = decodeReadback(encodeReadback(ROLES.HELM, {}, ship));
+  assert.equal(helm.role, ROLES.HELM);
+  assert.equal(helm.fields.bearing, 327);
+  assert.equal(helm.fields.pitch, -12);
+  assert.ok(Math.abs(helm.fields.throttle - 1) < 1e-9);
+
+  const tacVals = { acceptedKeys: new Set(['DELTA-9', 'WARP-7']), laserFreq: 340, ecmFreq: 12, pdFired: true, launchedAt: null, jamming: false, shieldArc: 'PORT' };
+  const tac = decodeReadback(encodeReadback(ROLES.TACTICAL, tacVals, ship));
+  assert.deepEqual(tac.fields.keys, ['DELTA-9', 'WARP-7']);
+  assert.equal(tac.fields.laserFreq, 340);
+  assert.equal(tac.fields.ecmFreq, 12);
+  assert.equal(tac.fields.pdFired, true);
+  assert.equal(tac.fields.launched, false);
+  assert.equal(tac.fields.shieldArc, 'PORT');
+
+  const sci = decodeReadback(encodeReadback(ROLES.SCIENCE, { lockedFreq: null, waveFreq: 215 }, ship));
+  assert.equal(sci.fields.lockedFreq, null);
+  assert.equal(sci.fields.waveFreq, 215);
+
+  const eng = decodeReadback(encodeReadback(ROLES.ENGINEERING, {}, ship));
+  assert.deepEqual(eng.fields.power, ['WEAPONS', 'THRUSTERS', 'SHIELDS', 'SENSORS', 'AUXILIARY']);
+  assert.deepEqual(eng.fields.breakers, ['MAIN', 'WEAPONS', 'THRUSTERS', 'SHIELDS', 'BOOST']);
+  assert.equal(eng.fields.thermal, 90);
+
+  // Codes are short enough to speak and never contain I or O
+  for (const code of [encodeReadback(ROLES.HELM, {}, ship), encodeReadback(ROLES.TACTICAL, tacVals, ship)]) {
+    assert.ok(code.length <= 10, code);
+    assert.ok(!/[IO]/.test(code), code);
+  }
+});
+
+test('Readback: misheard digit is caught by checksum, spoken variants normalise', () => {
+  const ship = new ShipState();
+  const code = encodeReadback(ROLES.SCIENCE, { lockedFreq: 100, waveFreq: 100 }, ship);
+  const ok = decodeReadback(code.toLowerCase().replace(/-/g, ' '));
+  assert.equal(ok.role, ROLES.SCIENCE);
+  assert.equal(ok.fields.lockedFreq, 100);
+  // flip one payload character
+  const chars = code.replace(/-/g, '').split('');
+  chars[2] = chars[2] === '7' ? '8' : '7';
+  const bad = decodeReadback(chars.join(''));
+  assert.equal(bad.error, 'GARBLED');
+  assert.equal(decodeReadback('Z1234').error, 'UNKNOWN_ROLE');
+  assert.equal(decodeReadback('H12').error, 'LENGTH');
+});
+
+test('Readback: compare gives per-field hints', () => {
+  const ship = new ShipState();
+  const d = decodeReadback(encodeReadback(ROLES.TACTICAL, { acceptedKeys: new Set(), laserFreq: 320 }, ship));
+  const cmp = compareReadback(ROLES.TACTICAL, d.fields, {
+    keys: { includes: ['DELTA-9'], hint: 'Enter DELTA-9' },
+    laserFreq: { value: 340, tol: 3, hint: 'Dial to 340' },
+  });
+  assert.equal(cmp.ok, false);
+  assert.equal(cmp.mismatches.length, 2);
+  assert.equal(cmp.mismatches[0].field, 'keys');
+  assert.equal(cmp.mismatches[1].actual, '320 MHz');
+  assert.equal(cmp.mismatches[1].hint, 'Dial to 340');
+});
+
+test('Scenario: Captain verifies crew readbacks against the chosen route; auto-clears the crew report', () => {
+  const timer = new TimerManager();
+  const ship = new ShipState();
+  const station = stationStub({ checklistDone: false });
+  const engine = new ScenarioEngine({ scenario: shakedown, timer, ship, role: ROLES.CAPTAIN, station });
+  engine.start();
+  run(engine, 61);
+
+  // Before a route is chosen, nothing can be verified.
+  const crewShip = new ShipState();
+  const tacGood = encodeReadback(ROLES.TACTICAL, { acceptedKeys: new Set([KEYS.ASTEROID_KEY]), laserFreq: 100, pdFired: true }, crewShip);
+  assert.equal(engine.submitReadback(tacGood).state, 'no-route');
+
+  engine.choose('asteroid', 'blast');
+  // Tactical forgot to pull point-defense: correction with a hint
+  const tacBad = encodeReadback(ROLES.TACTICAL, { acceptedKeys: new Set([KEYS.ASTEROID_KEY]), laserFreq: 100, pdFired: false }, crewShip);
+  const r1 = engine.submitReadback(tacBad);
+  assert.equal(r1.state, 'correction');
+  assert.equal(r1.role, ROLES.TACTICAL);
+  assert.equal(r1.hints[0].field, 'pdFired');
+  assert.match(r1.hints[0].hint, /POINT DEFENSE/);
+  assert.equal(engine.readback.roleStatus('asteroid', ROLES.TACTICAL).state, 'correction');
+
+  // Helm has nothing to do on BLAST: standby
+  assert.equal(engine.submitReadback(encodeReadback(ROLES.HELM, {}, crewShip)).state, 'standby');
+
+  // Corrected Tactical + Science lock → all verified → Captain task passes
+  assert.equal(engine.submitReadback(tacGood).state, 'verified');
+  const sci = encodeReadback(ROLES.SCIENCE, { lockedFreq: KEYS.ASTEROID_RETURN_FREQ, waveFreq: KEYS.ASTEROID_RETURN_FREQ }, crewShip);
+  assert.equal(engine.submitReadback(sci).state, 'verified');
+  run(engine, 1);
+  assert.equal(engine.tasks.find((t) => t.id === 'cap-readback-asteroid').state, 'success');
+
+  // Crew report auto-resolves to CLEARED because readbacks were verified
+  let debrief = null;
+  engine.events.on('debrief', (d) => (debrief = d));
+  run(engine, 45); // t = 107
+  assert.ok(debrief && debrief.id === 'asteroid-report');
+  assert.equal(debrief.chosen, 'cleared');
+  assert.equal(ship.shieldAverage, 100);
 });
 
 test('gradeFromTasks buckets', () => {

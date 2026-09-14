@@ -2,9 +2,15 @@ import * as THREE from 'three';
 import { StationBase, wrapText } from './StationBase.js';
 import { HoloNode } from '../controls/HoloNode.js';
 import { ScreenPanel } from '../controls/ScreenPanel.js';
+import { Keypad } from '../controls/Keypad.js';
 import { ParticleEmitter } from '../environment/Particles.js';
-import { PALETTE, ROLE_META } from '../core/Constants.js';
+import { PALETTE, ROLE_META, ROLES } from '../core/Constants.js';
 import { SpaceScape } from '../environment/SpaceScape.js';
+import { TimerManager } from '../sim/TimerManager.js';
+import { sfx } from '../core/Audio.js';
+
+const CREW = [ROLES.HELM, ROLES.TACTICAL, ROLES.SCIENCE, ROLES.ENGINEERING];
+const roleHex = (role) => '#' + ROLE_META[role].color.toString(16).padStart(6, '0');
 
 // Holo-table top in operator-local space (world table top y=1.01, seat y=0.45)
 const TABLE = new THREE.Vector3(0, 0.56, -1.05);
@@ -45,7 +51,35 @@ export class CaptainStation extends StationBase {
     });
     this.addScreen(this.keyScreen, this.deskMount(0.42, 0.675, 0.0));
 
+    // Readback verification: keypad on the table's near edge, results screen
+    // centred above the far edge.
+    this.readbackPad = new Keypad({
+      interaction: this.interaction, keys: 'base32', maxLength: 10, buttonSize: 0.03, name: 'cap-readback',
+      title: 'STATION CODE', okText: 'VERIFIED', badText: 'SEE SCREEN',
+      onEnter: (code) => this._submitReadback(code),
+    });
+    const padMount = new THREE.Group();
+    padMount.position.set(0, 0.57, -0.52);
+    padMount.rotation.x = -0.95;
+    this.group.add(padMount);
+    padMount.add(this.readbackPad.group);
+    this.readbackPad.buttons.forEach((b) => this.controls.push(b));
+    this.updaters.push((dt) => this.readbackPad.update(dt));
+
+    this.verify = new ScreenPanel({ width: 0.56, height: 0.26, px: 768, name: 'cap-verify', tint: '#7dff9a' });
+    this.verify.setDraw((ctx, w, h, p) => this._drawVerify(ctx, w, h, p));
+    const verifyMount = this.uprightMount(0, TABLE.y + 0.62, TABLE.z - 0.5);
+    verifyMount.rotation.x = -0.32;
+    this.addScreen(this.verify, verifyMount);
+
     this.damage.group.position.set(0.4, 0.5, -0.4);
+  }
+
+  _submitReadback(code) {
+    if (!this.engine) return false;
+    const res = this.engine.submitReadback(code);
+    this.verify.invalidate();
+    return res.state === 'verified';
   }
 
   _buildHoloTheater() {
@@ -105,8 +139,86 @@ export class CaptainStation extends StationBase {
 
   attachEngine(engine) {
     super.attachEngine(engine);
-    engine.events.on('decision', (d) => this._onDecision(d));
+    engine.events.on('decision', (d) => {
+      this._onDecision(d);
+      this.verify.invalidate();
+    });
     engine.events.on('debrief', (d) => this._onDebrief(d));
+    engine.events.on('readback', (e) => {
+      this.verify.invalidate();
+      if (e.type === 'open') sfx.tick();
+      else if (e.type === 'result' && e.result.state === 'correction') sfx.error();
+    });
+  }
+
+  _drawVerify(ctx, w, h, p) {
+    const eng = this.engine;
+    const rb = eng?.readback;
+    const win = rb?.active;
+    const t = eng?.timer.t ?? 0;
+    p.header('READBACK VERIFICATION', '#7dff9a');
+
+    if (!win) {
+      p.text('NO READBACK WINDOW OPEN', 14, 60, { size: 20, color: PALETTE.screenDim, weight: 'bold' });
+      wrapText(p, 'When a window opens, have each tasked station read its CONFIG CODE. Type it on the keypad and press ENT.', 14, 90, w - 28, 14, PALETTE.screenFg, 3);
+      this._drawLastReadback(p, w, h, 150);
+      return;
+    }
+
+    p.text(win.title, 14, 52, { size: 18, color: PALETTE.amber, weight: 'bold' });
+    p.text(`CLOSES ${TimerManager.format(win.until)}  ·  ${Math.max(0, Math.ceil(win.until - t))}s`, w - 14, 54, { size: 14, align: 'right', color: t > win.until - 15 ? PALETTE.red : PALETTE.screenFg });
+
+    const exp = rb.expectations(eng.ctx);
+    if (!exp) {
+      p.text('SELECT A ROUTE ON THE HOLO-TABLE FIRST', 14, 84, { size: 16, color: PALETTE.red, weight: 'bold' });
+      p.text('Codes cannot be verified until the route sets the required configuration.', 14, 108, { size: 13, color: PALETTE.screenFg });
+      this._drawLastReadback(p, w, h, 150);
+      return;
+    }
+
+    let y = 82;
+    const colW = (w - 28) / 2;
+    CREW.forEach((role, i) => {
+      const x = 14 + (i % 2) * colW;
+      const yy = y + Math.floor(i / 2) * 40;
+      const rule = exp[role];
+      const st = rb.roleStatus(win.id, role);
+      const standby = !rule || rule.standby;
+      const state = standby ? 'standby' : st.state;
+      const col = state === 'verified' ? PALETTE.green : state === 'correction' || state === 'garbled' ? PALETTE.red : state === 'standby' ? PALETTE.screenDim : PALETTE.amber;
+      const label = { verified: 'VERIFIED', correction: 'CORRECTION NEEDED', garbled: 'GARBLED — REPEAT', standby: 'STANDBY · N/A', pending: 'AWAITING CODE' }[state] ?? state.toUpperCase();
+      p.text(role, x, yy, { size: 14, color: roleHex(role), weight: 'bold' });
+      p.text(label, x + 118, yy, { size: 14, color: col, weight: 'bold' });
+      const detail = state === 'correction' ? st.hints[0]?.label : state === 'verified' ? st.code : standby ? 'no task on this route' : '';
+      if (detail) p.text(detail, x + 118, yy + 17, { size: 12, color: PALETTE.screenDim });
+    });
+    this._drawLastReadback(p, w, h, y + 86);
+  }
+
+  _drawLastReadback(p, w, h, y) {
+    const res = this.engine?.lastReadback;
+    if (!res) return;
+    const ctx = p.ctx;
+    ctx.fillStyle = res.state === 'verified' ? 'rgba(125,255,154,0.08)' : res.state === 'correction' || res.state === 'garbled' ? 'rgba(255,90,106,0.10)' : 'rgba(255,255,255,0.05)';
+    ctx.fillRect(8, y - 6, w - 16, h - y);
+    const who = res.role ?? 'UNKNOWN';
+    if (res.state === 'verified') {
+      p.text(`${who} · VERIFIED  ${res.code}`, 14, y, { size: 15, color: PALETTE.green, weight: 'bold' });
+      p.text('Tell them: "Verified, stand by." Move to the next station.', 14, y + 20, { size: 13, color: PALETTE.screenFg });
+      return;
+    }
+    if (res.state === 'correction') {
+      p.text(`${who} · CORRECTION NEEDED  (${res.hints.length} item${res.hints.length > 1 ? 's' : ''})`, 14, y, { size: 15, color: PALETTE.red, weight: 'bold' });
+      let yy = y + 20;
+      for (const m of res.hints.slice(0, 2)) {
+        p.text(`${m.label}: reads ${m.actual} — needs ${m.expected}`, 14, yy, { size: 13, color: PALETTE.white });
+        wrapText(p, `Tell them: ${m.hint}`, 14, yy + 16, w - 28, 12, PALETTE.amber, 2);
+        yy += 46;
+      }
+      return;
+    }
+    p.text(`${who} · ${res.state.toUpperCase().replace('-', ' ')}`, 14, y, { size: 15, color: PALETTE.amber, weight: 'bold' });
+    wrapText(p, res.reason ?? '', 14, y + 20, w - 28, 13, PALETTE.screenFg, 2);
   }
 
   _clearNodes() {
@@ -241,6 +353,7 @@ export class CaptainStation extends StationBase {
     if (this._clock > 0.5) {
       this._clock = 0;
       this.sitrep.invalidate();
+      if (this.engine?.readback.active) this.verify.invalidate();
     }
   }
 

@@ -12,6 +12,7 @@ import { ScenarioEngine } from '../sim/ScenarioEngine.js';
 import { shakedown, KEYS } from '../scenario/shakedown.js';
 import { RoleSelectPodium, PODIUM_SEAT } from '../ui/RoleSelectPodium.js';
 import { StandbyPedestal } from '../ui/StandbyPedestal.js';
+import { PauseMenu } from '../ui/PauseMenu.js';
 import { CaptainStation } from '../stations/CaptainStation.js';
 import { HelmStation } from '../stations/HelmStation.js';
 import { TacticalStation } from '../stations/TacticalStation.js';
@@ -45,11 +46,21 @@ export class App {
     this.station = null;
     this.engine = null;
     this.pedestal = null;
+    this.paused = false;
 
     this.space = new SpaceScape(this.scene);
     this.bridge = new Bridge(this.scene);
     this.ship = new ShipState();
     this.timer = new TimerManager();
+
+    this.pauseMenu = new PauseMenu({
+      interaction: this.interaction,
+      onResume: () => this.resume(),
+      onMainMenu: () => this.returnToMainMenu(),
+    });
+    // Sit in front of the camera so it stays readable in seated VR.
+    this.pauseMenu.root.position.set(0, 0, -0.85);
+    this.xr.camera.add(this.pauseMenu.root);
 
     this._buildPodium();
     this.xr.recenter(PODIUM_SEAT);
@@ -135,6 +146,7 @@ export class App {
   }
 
   standDown() {
+    this._closePauseMenu();
     this.engine?.dispose();
     this.engine = null;
     this.pedestal?.dispose();
@@ -152,15 +164,82 @@ export class App {
     bus.emit('app:phase', this.phase);
   }
 
+  /** Pause menu → role select (main menu / change stations). */
+  returnToMainMenu() {
+    this.standDown();
+  }
+
+  togglePauseMenu() {
+    if (this.phase === APP_PHASE.ROLE_SELECT) return;
+    if (this.paused) this.resume();
+    else this.pause();
+  }
+
+  pause() {
+    if (this.phase === APP_PHASE.ROLE_SELECT || this.paused) return;
+    this.paused = true;
+    this._setStationInteractive(false);
+    const labels = {
+      [APP_PHASE.CALIBRATE]: 'Calibrating view',
+      [APP_PHASE.STANDBY]: 'Waiting for ENGAGE',
+      [APP_PHASE.RUNNING]: `Mission paused · T+${TimerManager.format(this.timer.t)}`,
+      [APP_PHASE.COMPLETE]: 'Mission complete',
+    };
+    this.pauseMenu.setContext({ role: this.role, phaseLabel: labels[this.phase] ?? this.phase });
+    this.pauseMenu.show();
+  }
+
+  resume() {
+    if (!this.paused) return;
+    this.paused = false;
+    this.pauseMenu.hide();
+    this._setStationInteractive(true);
+  }
+
+  _closePauseMenu() {
+    if (!this.paused) return;
+    this.paused = false;
+    this.pauseMenu.hide();
+  }
+
+  _setStationInteractive(enabled) {
+    if (this.station) {
+      for (const c of this.station.controls) {
+        if (typeof c.setEnabled !== 'function') continue;
+        if (!enabled) {
+          c.setEnabled(false);
+          continue;
+        }
+        // Preserve lockout: only ACK stays live when the station is frozen.
+        if (this.station.locked && c !== this.station.ackButton) c.setEnabled(false);
+        else c.setEnabled(true);
+      }
+    }
+    if (!this.pedestal) return;
+    if (!enabled) {
+      for (const c of this.pedestal.controls) c.setEnabled?.(false);
+      return;
+    }
+    if (this.phase === APP_PHASE.CALIBRATE) this.pedestal.setPhase('CALIBRATE');
+    else if (this.phase === APP_PHASE.STANDBY) this.pedestal.setPhase('STANDBY');
+    else if (this.phase === APP_PHASE.COMPLETE) {
+      for (const c of this.pedestal.controls) c.setEnabled?.(c === this.pedestal.ready);
+    } else {
+      for (const c of this.pedestal.controls) c.setEnabled?.(false);
+    }
+  }
+
   // ---- frame -------------------------------------------------------------
 
   _frame() {
     const dt = Math.min(0.1, this.clock.getDelta());
+    if (this.xr.pollMenuButton()) this.togglePauseMenu();
     this.interaction.update(dt);
-    if (this.phase === APP_PHASE.RUNNING) this.timer.advance(dt);
+    if (this.phase === APP_PHASE.RUNNING && !this.paused) this.timer.advance(dt);
     this.podium?.update(dt);
-    this.pedestal?.update(dt);
-    this.station?.update(dt);
+    if (!this.paused) this.pedestal?.update(dt);
+    if (!this.paused) this.station?.update(dt);
+    this.pauseMenu.update(dt);
     this.bridge.update(dt);
     this.space.update(dt);
     this.xr.render();
@@ -205,6 +284,11 @@ export class App {
     // Desktop test shortcuts
     window.addEventListener('keydown', (e) => {
       sfx.unlock();
+      if (e.key === 'Escape') {
+        this.togglePauseMenu();
+        return;
+      }
+      if (this.paused) return;
       const idx = Number(e.key) - 1;
       if (idx >= 0 && idx < ROLE_ORDER.length && this.phase === APP_PHASE.ROLE_SELECT) this.selectRole(ROLE_ORDER[idx]);
       if (e.key === 'r' || e.key === 'R') this.xr.recenter(this.role ? STATION_SEATS[this.role] : PODIUM_SEAT);
