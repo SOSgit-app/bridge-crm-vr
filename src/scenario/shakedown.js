@@ -39,8 +39,30 @@ export const shakedown = {
     { t: 0, id: 'engage', title: 'ENGAGE — SHAKEDOWN CRUISE UNDERWAY', message: 'All stations: run Phase 1 systems check.', level: 'ok' },
     {
       t: 10, id: 'checklist', to: [CAPTAIN], title: 'CREW DIAGNOSTIC CHECKLIST', level: 'info',
-      message: 'Walk each station through its check. Tap each item on the Holo-Table when the crew reports ready.',
-      action: (ctx) => ctx.station.showChecklist?.(['SCIENCE: buoy frequency tuned', 'TACTICAL: laser matched to buoy', 'HELM: nose on marker X:050 Y:000', 'ENGINEERING: aux cable → thrusters']),
+      message: 'Read each station\'s check aloud in order. Tap the Holo-Table node when that station reports ready.',
+      action: (ctx) =>
+        ctx.station.showChecklist?.([
+          {
+            role: SCIENCE,
+            call: 'Science — tune the wave dial to the navigation buoy and call out the frequency.',
+            verify: 'They call "100 MHz" (or lock confirmed).',
+          },
+          {
+            role: TACTICAL,
+            call: 'Tactical — set laser modulation to the buoy frequency Science just called.',
+            verify: 'They confirm laser matched to buoy.',
+          },
+          {
+            role: HELM,
+            call: 'Helm — put the nose on the calibration marker, X:050 Y:000.',
+            verify: 'They confirm aligned on marker.',
+          },
+          {
+            role: ENGINEERING,
+            call: 'Engineering — move the Auxiliary patch cable to Thrusters and confirm the breaker holds.',
+            verify: 'They confirm Thrusters bus live.',
+          },
+        ]),
     },
     {
       t: 20, id: 'buoy-signal', to: [SCIENCE], title: 'RAW SIGNAL DETECTED', level: 'info',
@@ -143,7 +165,7 @@ export const shakedown = {
     { id: 'tac-laser-cal', role: TACTICAL, from: 30, until: 60, title: 'MATCH LASER TO BUOY', hint: 'Laser dial to Science\'s frequency', check: (c) => verifyDial(c.values.laserFreq, KEYS.BUOY_FREQ, 2) },
     { id: 'helm-marker', role: HELM, from: 40, until: 60, title: 'NOSE ON MARKER X:050 Y:000', hint: 'Bearing 050, pitch 0', check: (c) => verifyVector(c.ship.attitude, KEYS.MARKER, { bearingTol: 4, pitchTol: 4 }) },
     { id: 'eng-thrusters', role: ENGINEERING, from: 50, until: 60, title: 'AUX CABLE → THRUSTERS', hint: 'Re-seat cable, breaker must hold', check: (c) => c.values.cableMoved === true && c.ship.power.THRUSTERS && c.ship.breakers.THRUSTERS },
-    { id: 'cap-checklist', role: CAPTAIN, from: 10, until: 60, title: 'COMPLETE CREW CHECKLIST', hint: 'Tap each item as reported', check: (c) => c.values.checklistDone === true },
+    { id: 'cap-checklist', role: CAPTAIN, from: 10, until: 60, title: 'COMPLETE CREW CHECKLIST', hint: 'Read each call aloud; tap the node when they report ready', check: (c) => c.values.checklistDone === true },
 
     // ---- Phase 2: asteroid (branch alternatives, 10% shield penalty) ------
     { id: 'tac-pd', role: TACTICAL, from: 60, until: 105, title: 'UNLOCK POINT-DEFENSE', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'PD key + handle, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'blast' }, allowStandby: true, penalty: asteroidPenalty,

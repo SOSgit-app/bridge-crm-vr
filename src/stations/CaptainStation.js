@@ -166,16 +166,33 @@ export class CaptainStation extends StationBase {
   }
 
   showChecklist(items) {
-    this.values.checklist = items.map((text, i) => ({ id: `chk${i}`, text, done: false }));
+    this.values.checklist = items.map((item, i) => {
+      if (typeof item === 'string') {
+        return { id: `chk${i}`, role: null, label: item.split(':')[0]?.trim() ?? `#${i + 1}`, call: item, verify: 'Reports ready.', done: false };
+      }
+      const meta = ROLE_META[item.role];
+      return {
+        id: `chk${i}`,
+        role: item.role,
+        label: meta?.label ?? item.role ?? `#${i + 1}`,
+        call: item.call,
+        verify: item.verify ?? 'Reports ready.',
+        done: false,
+      };
+    });
     this.values.checklistDone = false;
     this._spawnNodes(
-      this.values.checklist.map((c, i) => ({
-        id: c.id, label: ['SCI', 'TAC', 'HELM', 'ENG'][i] ?? `#${i + 1}`, sub: 'READY?', color: 0xffb347,
+      this.values.checklist.map((c) => ({
+        id: c.id,
+        label: c.label.length > 6 ? c.label.slice(0, 3) : c.label,
+        sub: 'READY?',
+        color: c.role && ROLE_META[c.role] ? ROLE_META[c.role].color : 0xffb347,
         onSelect: (node) => {
           c.done = true;
           node.setSelected(true);
           this.values.checklistDone = this.values.checklist.every((x) => x.done);
           this.sitrep.invalidate();
+          this.status?.invalidate();
           if (this.values.checklistDone) setTimeout(() => this._clearNodes(), 1500);
         },
       })),
@@ -285,11 +302,26 @@ export class CaptainStation extends StationBase {
       return;
     }
     if (this.values.checklist.length && !this.values.checklistDone) {
-      p.text('CREW DIAGNOSTIC CHECKLIST', 14, y, { size: 16, color: PALETTE.amber, weight: 'bold' });
-      y += 24;
-      for (const c of this.values.checklist) {
-        p.text(`${c.done ? '■' : '□'} ${c.text}`, 14, y, { size: 14, color: c.done ? PALETTE.green : PALETTE.white });
+      p.text('CREW READINESS CHECK', 14, y, { size: 16, color: PALETTE.amber, weight: 'bold' });
+      p.text('READ ALOUD · TAP NODE WHEN READY', w - 14, y + 2, { size: 11, align: 'right', color: PALETTE.screenDim });
+      y += 22;
+
+      const current = this.values.checklist.find((c) => !c.done);
+      if (current) {
+        const col = current.role && ROLE_META[current.role] ? '#' + ROLE_META[current.role].color.toString(16).padStart(6, '0') : PALETTE.white;
+        p.text(`NOW → ${current.label}`, 14, y, { size: 15, color: col, weight: 'bold' });
+        y += 20;
+        wrapText(p, current.call, 14, y, w - 28, 14, PALETTE.white, 3);
+        y += 48;
+        p.text(`LISTEN FOR: ${current.verify}`, 14, y, { size: 12, color: PALETTE.amber });
         y += 22;
+      }
+
+      for (const c of this.values.checklist) {
+        const col = c.done ? PALETTE.green : PALETTE.screenDim;
+        const mark = c.done ? '■' : '□';
+        p.text(`${mark} ${c.label}`, 14, y, { size: 13, color: col, weight: c.done ? 'normal' : 'bold' });
+        y += 17;
       }
       return;
     }
