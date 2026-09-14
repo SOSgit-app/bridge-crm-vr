@@ -30,16 +30,18 @@ export class CaptainStation extends StationBase {
 
     this._buildHoloTheater();
 
-    // Sitrep pillar screen on the far edge of the table (right)
-    this.sitrep = new ScreenPanel({ width: 0.5, height: 0.36, px: 640, name: 'cap-sitrep', tint: '#ffc85a' });
+    // Command screens float as angled wings over the near corners of the
+    // table, ~0.9 m from the seated eye, so the text is readable without leaning.
+    const wing = { x: 0.6, y: TABLE.y + 0.44, z: TABLE.z + 0.15, pitch: -0.18, yaw: 0.62 };
+    this.sitrep = new ScreenPanel({ width: 0.56, height: 0.4, px: 640, name: 'cap-sitrep', tint: '#ffc85a' });
     this.sitrep.setDraw((ctx, w, h, p) => this._drawSitrep(ctx, w, h, p));
-    const sitrepMount = this.uprightMount(0.36, TABLE.y + 0.24, TABLE.z - 0.48);
-    sitrepMount.rotation.set(-0.25, -0.25, 0);
+    const sitrepMount = this.uprightMount(wing.x, wing.y, wing.z);
+    sitrepMount.rotation.set(wing.pitch, -wing.yaw, 0);
     this.addScreen(this.sitrep, sitrepMount);
 
-    const statusMount = this.uprightMount(-0.36, TABLE.y + 0.24, TABLE.z - 0.48);
-    statusMount.rotation.set(-0.25, 0.25, 0);
-    this.buildCommon({ statusMount, ackMount: this.deskMount(-0.42, 0.675, 0.0), statusSize: { width: 0.5, height: 0.36 } });
+    const statusMount = this.uprightMount(-wing.x, wing.y, wing.z);
+    statusMount.rotation.set(wing.pitch, wing.yaw, 0);
+    this.buildCommon({ statusMount, ackMount: this.deskMount(-0.42, 0.675, 0.0), statusSize: { width: 0.56, height: 0.4 } });
 
     // Command key display on the right armrest
     this.keyScreen = new ScreenPanel({ width: 0.13, height: 0.075, px: 384, name: 'cap-key', tint: '#ffc85a' });
@@ -66,10 +68,11 @@ export class CaptainStation extends StationBase {
     this.readbackPad.buttons.forEach((b) => this.controls.push(b));
     this.updaters.push((dt) => this.readbackPad.update(dt));
 
+    // Verification screen hangs above the holo column, centred, tilted to the seat.
     this.verify = new ScreenPanel({ width: 0.56, height: 0.26, px: 768, name: 'cap-verify', tint: '#7dff9a' });
     this.verify.setDraw((ctx, w, h, p) => this._drawVerify(ctx, w, h, p));
-    const verifyMount = this.uprightMount(0, TABLE.y + 0.62, TABLE.z - 0.5);
-    verifyMount.rotation.x = -0.32;
+    const verifyMount = this.uprightMount(0, TABLE.y + 0.56, TABLE.z + 0.22);
+    verifyMount.rotation.x = -0.42;
     this.addScreen(this.verify, verifyMount);
 
     this.damage.group.position.set(0.4, 0.5, -0.4);
