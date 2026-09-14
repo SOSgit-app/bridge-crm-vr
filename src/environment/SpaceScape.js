@@ -1,16 +1,28 @@
 import * as THREE from 'three';
+import { BRIDGE } from './BridgeGeometry.js';
 
 /**
  * Everything visible through the viewport: a volumetric FBM nebula dome,
- * a starfield, streaming space dust and ion-trail streaks. The whole group
- * counter-rotates with the ship's attitude so Helm inputs are felt visually
- * even though no player ever moves.
+ * a starfield, streaming space dust and ion-trail streaks.
+ *
+ * Far sky (nebula + stars + markers) counter-rotates with ship attitude.
+ * Near FX (dust + ion trails) stay ship-fixed and are hard-culled outside
+ * the viewport glass so they never stream through the cabin.
  */
 export class SpaceScape {
   constructor(scene) {
     this.group = new THREE.Group();
     this.group.name = 'Space';
     scene.add(this.group);
+
+    // Ship-fixed streaming FX — never rotates with attitude, never enters cabin.
+    this.fx = new THREE.Group();
+    this.fx.name = 'SpaceFX';
+    scene.add(this.fx);
+
+    // Keep all streaming particles beyond the outer face of the viewport glass.
+    this.viewportCullZ = BRIDGE.frontZ - 0.35;
+
     this.speed = 0.35; // 0..1 from Helm throttle
     this.time = 0;
     this.attitude = new THREE.Quaternion();
@@ -83,6 +95,7 @@ export class SpaceScape {
     this.nebulaMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
+      depthTest: true,
       uniforms: {
         uTime: { value: 0 },
         uColorA: { value: new THREE.Color(0x12305c) },
@@ -130,6 +143,7 @@ export class SpaceScape {
     });
     const dome = new THREE.Mesh(new THREE.SphereGeometry(180, 48, 32), this.nebulaMat);
     dome.name = 'nebula';
+    dome.renderOrder = -3;
     this.group.add(dome);
   }
 
@@ -152,6 +166,7 @@ export class SpaceScape {
     const mat = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
+      depthTest: true,
       vertexColors: true,
       uniforms: { uScale: { value: 1 } },
       vertexShader: /* glsl */ `
@@ -162,25 +177,23 @@ export class SpaceScape {
         void main(){ float d = length(gl_PointCoord-0.5); float a = smoothstep(0.5,0.1,d); gl_FragColor = vec4(vColor, a); }`,
     });
     this.stars = new THREE.Points(geo, mat);
+    this.stars.renderOrder = -2;
     this.group.add(this.stars);
   }
 
   _buildDust() {
-    // Dust streams toward the ship from far ahead (-Z), speed-scaled, wrapping
-    // in a box volume centred a little in front of the viewport.
+    // Dust streams toward the ship from far ahead (-Z) in ship-local space,
+    // wrapped so particles never cross the viewport plane into the cabin.
     this.dustCount = 900;
-    this.dustBox = new THREE.Vector3(30, 18, 60);
+    this.dustBox = new THREE.Vector3(28, 14, 70);
     const pos = new Float32Array(this.dustCount * 3);
-    for (let i = 0; i < this.dustCount; i++) {
-      pos[i * 3] = (Math.random() - 0.5) * this.dustBox.x;
-      pos[i * 3 + 1] = (Math.random() - 0.5) * this.dustBox.y;
-      pos[i * 3 + 2] = -Math.random() * this.dustBox.z - 4;
-    }
+    for (let i = 0; i < this.dustCount; i++) this._spawnDust(pos, i, true);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     this.dustMat = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
+      depthTest: true,
       blending: THREE.AdditiveBlending,
       uniforms: { uSpeed: { value: 0.3 }, uColor: { value: new THREE.Color(0x9fd0ff) } },
       vertexShader: /* glsl */ `
@@ -189,7 +202,7 @@ export class SpaceScape {
           vec4 mv = modelViewMatrix*vec4(position,1.0);
           float dist = -mv.z;
           gl_PointSize = clamp(90.0/dist, 1.0, 6.0) * (1.0 + uSpeed*1.5);
-          vFade = smoothstep(70.0, 10.0, dist) * (0.35 + uSpeed*0.65);
+          vFade = smoothstep(70.0, 12.0, dist) * (0.35 + uSpeed*0.65);
           gl_Position = projectionMatrix*mv;
         }`,
       fragmentShader: /* glsl */ `
@@ -198,7 +211,20 @@ export class SpaceScape {
     });
     this.dust = new THREE.Points(geo, this.dustMat);
     this.dust.frustumCulled = false;
-    this.group.add(this.dust);
+    this.dust.renderOrder = -1;
+    this.fx.add(this.dust);
+  }
+
+  _spawnDust(pos, i, initial = false) {
+    // Confine to a corridor roughly matching the viewport opening so walls
+    // don't need to occlude stray particles at the edges.
+    const halfW = 2.6;
+    const halfH = 0.85;
+    pos[i * 3] = (Math.random() - 0.5) * halfW * 2;
+    pos[i * 3 + 1] = 1.85 + (Math.random() - 0.5) * halfH * 2;
+    pos[i * 3 + 2] = initial
+      ? this.viewportCullZ - Math.random() * this.dustBox.z
+      : this.viewportCullZ - this.dustBox.z - Math.random() * 8;
   }
 
   _buildTrails() {
@@ -209,16 +235,28 @@ export class SpaceScape {
     for (let i = 0; i < this.trailCount; i++) this._spawnTrail(pos, i, true);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    const mat = new THREE.LineBasicMaterial({ color: 0x5ad0ff, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false });
+    const mat = new THREE.LineBasicMaterial({
+      color: 0x5ad0ff,
+      transparent: true,
+      opacity: 0.35,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: true,
+    });
     this.trails = new THREE.LineSegments(geo, mat);
     this.trails.frustumCulled = false;
-    this.group.add(this.trails);
+    this.trails.renderOrder = -1;
+    this.fx.add(this.trails);
   }
 
   _spawnTrail(pos, i, initial = false) {
-    const x = (Math.random() - 0.5) * 40;
-    const y = (Math.random() - 0.5) * 24;
-    const z = initial ? -Math.random() * 90 - 5 : -95 - Math.random() * 20;
+    const halfW = 2.6;
+    const halfH = 0.85;
+    const x = (Math.random() - 0.5) * halfW * 2;
+    const y = 1.85 + (Math.random() - 0.5) * halfH * 2;
+    const z = initial
+      ? this.viewportCullZ - Math.random() * 90 - 2
+      : this.viewportCullZ - 95 - Math.random() * 20;
     const len = 1.5 + Math.random() * 5;
     pos.set([x, y, z, x, y, z - len], i * 6);
     this.trailSpeeds[i] = 25 + Math.random() * 40;
@@ -256,14 +294,12 @@ export class SpaceScape {
     const speed = 6 + this.speed * 60;
     this.dustMat.uniforms.uSpeed.value = this.speed;
     const dp = this.dust.geometry.attributes.position;
+    const cull = this.viewportCullZ;
     for (let i = 0; i < this.dustCount; i++) {
       let z = dp.getZ(i) + speed * dt;
-      if (z > 6) {
-        z = -this.dustBox.z - 4;
-        dp.setX(i, (Math.random() - 0.5) * this.dustBox.x);
-        dp.setY(i, (Math.random() - 0.5) * this.dustBox.y);
-      }
-      dp.setZ(i, z);
+      // Never let a particle cross the viewport glass into the cabin.
+      if (z >= cull) this._spawnDust(dp.array, i, false);
+      else dp.setZ(i, z);
     }
     dp.needsUpdate = true;
 
@@ -271,7 +307,7 @@ export class SpaceScape {
     for (let i = 0; i < this.trailCount; i++) {
       const v = (this.trailSpeeds[i] + this.speed * 60) * dt;
       const z0 = tp.getZ(i * 2) + v;
-      if (z0 > 10) this._spawnTrail(tp.array, i);
+      if (z0 >= cull) this._spawnTrail(tp.array, i);
       else {
         tp.setZ(i * 2, z0);
         tp.setZ(i * 2 + 1, tp.getZ(i * 2 + 1) + v);
