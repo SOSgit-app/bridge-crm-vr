@@ -1,0 +1,12 @@
+{
+  "name": "Bridge CRM Simulator",
+  "short_name": "Bridge",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#050810",
+  "theme_color": "#050810",
+  "description": "5-player offline WebXR bridge simulator driven by Crew Resource Management.",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
