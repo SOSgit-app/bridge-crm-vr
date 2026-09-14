@@ -28,14 +28,53 @@ export class ScenarioEngine {
     this.finished = false;
     this.messages = []; // recent alerts for this station
     this._unsubStep = null;
-    // Captain-only: crew readback verification windows
-    this.readback = new ReadbackTracker(scenario.readbacks ?? []);
+    // Captain-only: crew readback verification windows (timed + pre-flight)
+    const pre = scenario.preflight;
+    this.preflightWindow = pre ? { id: pre.readback, title: 'PRE-FLIGHT CHECK-OFF', from: null, until: null, expect: pre.expect } : null;
+    this.readback = new ReadbackTracker([...(this.preflightWindow ? [this.preflightWindow] : []), ...(scenario.readbacks ?? [])]);
     this.lastReadback = null;
+    this.preflight = false; // true between STATION READY and ENGAGE
+    this.preflightTasks = [];
+  }
+
+  /** Untimed pre-flight: orders go out, stations configure, Captain verifies codes. */
+  startPreflight() {
+    const pre = this.scenario.preflight;
+    this.preflight = true;
+    if (!pre) return;
+    this.preflightTasks = (pre.tasks ?? [])
+      .filter((t) => t.role === this.role)
+      .map((t) => ({ ...t, from: -1, until: Infinity, alternatives: [t], allowStandby: false, penalty: null, state: 'active', matched: null, preflight: true }));
+    this.tasks = this.preflightTasks;
+    if (this.role === ROLES.CAPTAIN && this.preflightWindow) {
+      this.readback.open(this.preflightWindow, -1);
+      this.events.emit('readback', { type: 'open', window: this.preflightWindow });
+    }
+    for (const inj of pre.injects ?? []) this._fireInject({ ...inj, t: -1 });
+    this.events.emit('preflight', { started: true });
+  }
+
+  /** Called every frame while in pre-flight (no deterministic clock yet). */
+  tickPreflight(dt) {
+    if (!this.preflight) return;
+    this._evaluateTasks(0);
+    this.scenario.step?.(this.ctx, dt);
+    if (this.role === ROLES.CAPTAIN && !this._preflightVerified && this.readyToEngage) {
+      this._preflightVerified = true;
+      this.ship.logEvent(0, 'PRE-FLIGHT: all stations verified — ENGAGE armed', 'ok');
+      this.events.emit('preflight', { verified: true });
+    }
+  }
+
+  /** Captain: all four stations verified by readback. Crew: always (they tap on the Captain's count). */
+  get readyToEngage() {
+    if (this.role !== ROLES.CAPTAIN || !this.preflightWindow) return true;
+    return this.readback.allVerified(this.preflightWindow.id, this.ctx);
   }
 
   get ctx() {
     return {
-      t: this.timer.t,
+      t: this.preflight ? -1 : this.timer.t,
       role: this.role,
       ship: this.ship,
       station: this.station,
@@ -49,8 +88,20 @@ export class ScenarioEngine {
 
   start() {
     const s = this.scenario;
+    // Leave pre-flight: unresolved pre-flight tasks are graded as failed.
+    const preDone = this.preflightTasks.map((t) => {
+      if (t.state === 'active') {
+        t.state = 'failed';
+        this.ship.logEvent(0, `PRE-FLIGHT NOT MET: ${t.title}`, 'warn');
+      }
+      return t;
+    });
+    if (this.preflightWindow) this.readback.close(this.preflightWindow);
+    this.preflight = false;
+    this.messages = [];
     this.timer.clearSchedule();
     this._buildTasks();
+    this.tasks = [...preDone, ...this.tasks];
 
     for (const inj of s.injects) {
       this.timer.at(inj.t, () => this._fireInject(inj), inj.id);
@@ -128,6 +179,11 @@ export class ScenarioEngine {
 
   _step(dt, t) {
     if (this.finished) return;
+    this._evaluateTasks(t);
+    this.scenario.step?.(this.ctx, dt);
+  }
+
+  _evaluateTasks(t) {
     for (const task of this.tasks) {
       if (task.state !== 'active') continue;
       let matched = null;
@@ -155,7 +211,6 @@ export class ScenarioEngine {
         this.events.emit('task', task);
       }
     }
-    this.scenario.step?.(this.ctx, dt);
   }
 
   _fireInject(inj) {
@@ -166,7 +221,7 @@ export class ScenarioEngine {
     this.messages.unshift(entry);
     if (this.messages.length > 6) this.messages.pop();
     inj.action?.(this.ctx);
-    this.ship.logEvent(inj.t, `${inj.title}`, inj.level ?? 'info');
+    this.ship.logEvent(Math.max(0, inj.t), `${inj.title}`, inj.level ?? 'info');
     this.events.emit('inject', entry);
   }
 
@@ -218,7 +273,7 @@ export class ScenarioEngine {
   submitReadback(code) {
     const res = this.readback.submit(code, this.ctx);
     this.lastReadback = res;
-    const t = this.timer.t;
+    const t = this.preflight ? 0 : this.timer.t;
     if (res.state === 'verified') this.ship.logEvent(t, `READBACK ${res.role}: VERIFIED (${res.code})`, 'ok');
     else if (res.state === 'correction') this.ship.logEvent(t, `READBACK ${res.role}: CORRECTION — ${res.hints[0]?.label}`, 'warn');
     else if (res.state === 'garbled') this.ship.logEvent(t, `READBACK: garbled code`, 'warn');

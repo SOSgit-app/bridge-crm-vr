@@ -88,18 +88,88 @@ test('ShipState: thermal runaway locks out Engineering after sustained overload'
   assert.ok(s.thermal < 100);
 });
 
-test('Scenario: Tactical succeeds phase 1 laser calibration and fails asteroid without action', () => {
+// ---- Pre-flight (untimed check-off) --------------------------------------
+
+test('Pre-flight: crew task has no clock and resolves when the station is configured', () => {
+  const timer = new TimerManager();
+  const ship = new ShipState();
+  const station = stationStub({ laserFreq: 0, ecmFreq: 0 });
+  const engine = new ScenarioEngine({ scenario: shakedown, timer, ship, role: ROLES.TACTICAL, station });
+  engine.startPreflight();
+  assert.equal(engine.preflight, true);
+  assert.equal(timer.running, false, 'no clock in pre-flight');
+  assert.ok(engine.messages.some((m) => m.id === 'pre-laser' && m.t < 0), 'pre-flight order delivered');
+  const cal = engine.tasks.find((t) => t.id === 'pre-tac-laser');
+  assert.equal(cal.state, 'active');
+  assert.equal(cal.until, Infinity);
+  for (let i = 0; i < 500; i++) engine.tickPreflight(1 / 72); // ~7 s of idling: never fails
+  assert.equal(cal.state, 'active');
+  station.values.laserFreq = KEYS.BUOY_FREQ;
+  engine.tickPreflight(1 / 72);
+  assert.equal(cal.state, 'success');
+  assert.equal(engine.readyToEngage, true, 'crew ENGAGE is never gated');
+  // ENGAGE: clock starts at 00:00 and pre-flight results carry into the grade
+  engine.start();
+  assert.equal(engine.preflight, false);
+  assert.equal(timer.t, 0);
+  assert.equal(engine.tasks.find((t) => t.id === 'pre-tac-laser').state, 'success');
+});
+
+test('Pre-flight: Captain ENGAGE arms only after all four station codes verify', () => {
+  const timer = new TimerManager();
+  const ship = new ShipState();
+  const station = stationStub({ checklist: [], checklistDone: false });
+  const engine = new ScenarioEngine({ scenario: shakedown, timer, ship, role: ROLES.CAPTAIN, station });
+  let verifiedEvent = false;
+  engine.events.on('preflight', (e) => e.verified && (verifiedEvent = true));
+  engine.startPreflight();
+  assert.equal(engine.readyToEngage, false);
+  assert.equal(engine.readback.active?.id, 'systems-check');
+  assert.equal(engine.readback.active.until, null);
+
+  const crew = new ShipState();
+  // Helm not yet on the marker → correction with hint, still not ready
+  crew.attitude.bearing = 20;
+  const helmBad = engine.submitReadback(encodeReadback(ROLES.HELM, {}, crew));
+  assert.equal(helmBad.state, 'correction');
+  assert.match(helmBad.hints[0].hint, /050/);
+  assert.equal(engine.readyToEngage, false);
+
+  crew.attitude.bearing = KEYS.MARKER.bearing;
+  assert.equal(engine.submitReadback(encodeReadback(ROLES.HELM, {}, crew)).state, 'verified');
+  assert.equal(engine.submitReadback(encodeReadback(ROLES.SCIENCE, { lockedFreq: null, waveFreq: KEYS.BUOY_FREQ }, crew)).state, 'verified');
+  assert.equal(engine.submitReadback(encodeReadback(ROLES.TACTICAL, { acceptedKeys: new Set(), laserFreq: KEYS.BUOY_FREQ }, crew)).state, 'verified');
+  assert.equal(engine.readyToEngage, false, 'three of four is not enough');
+  assert.equal(engine.submitReadback(encodeReadback(ROLES.ENGINEERING, {}, crew)).state, 'verified');
+  assert.equal(engine.readyToEngage, true);
+  engine.tickPreflight(1 / 72);
+  assert.ok(verifiedEvent);
+  assert.equal(engine.tasks.find((t) => t.id === 'pre-cap-verify').state, 'success');
+
+  engine.start();
+  assert.equal(engine.readback.active, null, 'pre-flight window closes on ENGAGE');
+  assert.equal(engine.tasks.find((t) => t.id === 'pre-cap-verify').state, 'success');
+});
+
+test('Pre-flight: unmet items are graded as failed when the crew engages anyway', () => {
+  const timer = new TimerManager();
+  const ship = new ShipState();
+  const station = stationStub({ laserFreq: 0 });
+  const engine = new ScenarioEngine({ scenario: shakedown, timer, ship, role: ROLES.TACTICAL, station });
+  engine.startPreflight();
+  engine.start();
+  assert.equal(engine.tasks.find((t) => t.id === 'pre-tac-laser').state, 'failed');
+});
+
+// ---- Timed mission ---------------------------------------------------------
+
+test('Scenario: Tactical fails the asteroid window without action', () => {
   const timer = new TimerManager();
   const ship = new ShipState();
   const station = stationStub({ laserFreq: 0, ecmFreq: 0 });
   const engine = new ScenarioEngine({ scenario: shakedown, timer, ship, role: ROLES.TACTICAL, station });
   engine.start();
-  run(engine, 35);
-  station.values.laserFreq = KEYS.BUOY_FREQ;
-  run(engine, 1);
-  const cal = engine.tasks.find((t) => t.id === 'tac-laser-cal');
-  assert.equal(cal.state, 'success');
-  run(engine, 70); // through the asteroid window with no action
+  run(engine, 62); // through the asteroid window (15–60) with no action
   const asteroid = engine.tasks.find((t) => t.id.startsWith('asteroid:'));
   assert.equal(asteroid.state, 'failed');
   assert.equal(ship.shields.FORE, 90, 'asteroid scrape drains 10% shields');
@@ -111,7 +181,7 @@ test('Scenario: STANDBY ack inside the window satisfies an un-tasked branch (clo
   const station = stationStub({ laserFreq: 0 });
   const engine = new ScenarioEngine({ scenario: shakedown, timer, ship, role: ROLES.TACTICAL, station });
   engine.start();
-  run(engine, 70);
+  run(engine, 25);
   station.standbyAckAt = timer.t;
   run(engine, 1);
   const asteroid = engine.tasks.find((t) => t.id.startsWith('asteroid:'));
@@ -127,9 +197,9 @@ test('Scenario: full kinetic drone kill on Tactical', () => {
   station.onKill = () => (killed = true);
   const engine = new ScenarioEngine({ scenario: shakedown, timer, ship, role: ROLES.TACTICAL, station });
   engine.start();
-  run(engine, 70);
+  run(engine, 25);
   station.standbyAckAt = timer.t; // asteroid: told to stand by
-  run(engine, 82); // t = 152
+  run(engine, 82); // t = 107, past EXECUTE at 105
   station.values.acceptedKeys.add(KEYS.DRONE_ARM_KEY);
   station.values.laserFreq = KEYS.DRONE_SHIELD_FREQ;
   station.values.launchedAt = timer.t;
@@ -140,7 +210,7 @@ test('Scenario: full kinetic drone kill on Tactical', () => {
   let summary = null;
   engine.events.on('complete', (s) => (summary = s));
   run(engine, 30);
-  assert.ok(summary, 'scenario should complete at 03:00');
+  assert.ok(summary, 'scenario should complete at 02:15');
   assert.equal(summary.success, true);
   assert.equal(ship.hull, 100);
 });
@@ -153,7 +223,7 @@ test('Scenario: Captain decision gates alternatives and generates keys', () => {
   let decision = null;
   engine.events.on('decision', (d) => (decision = d));
   engine.start();
-  run(engine, 61);
+  run(engine, 16);
   assert.ok(decision && decision.id === 'asteroid');
   assert.equal(decision.options.length, 2);
   assert.ok(engine.choose('asteroid', 'blast'));
@@ -245,7 +315,7 @@ test('Scenario: Captain verifies crew readbacks against the chosen route; auto-c
   const station = stationStub({ checklistDone: false });
   const engine = new ScenarioEngine({ scenario: shakedown, timer, ship, role: ROLES.CAPTAIN, station });
   engine.start();
-  run(engine, 61);
+  run(engine, 16);
 
   // Before a route is chosen, nothing can be verified.
   const crewShip = new ShipState();
@@ -275,7 +345,7 @@ test('Scenario: Captain verifies crew readbacks against the chosen route; auto-c
   // Crew report auto-resolves to CLEARED because readbacks were verified
   let debrief = null;
   engine.events.on('debrief', (d) => (debrief = d));
-  run(engine, 45); // t = 107
+  run(engine, 45); // t = 62
   assert.ok(debrief && debrief.id === 'asteroid-report');
   assert.equal(debrief.chosen, 'cleared');
   assert.equal(ship.shieldAverage, 100);

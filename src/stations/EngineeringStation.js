@@ -90,7 +90,8 @@ export class EngineeringStation extends StationBase {
   }
 
   _onPlug(socket) {
-    if (socket.id === 'THRUSTERS' && (this.engine?.timer.t ?? 0) >= 45) this.values.cableMoved = true;
+    // Only a re-seat performed after orders start counts (the build-time plug does not).
+    if (socket.id === 'THRUSTERS' && this.engine) this.values.cableMoved = true;
     this._syncPower();
     this.ship.logEvent(this.engine?.timer.t ?? 0, `BUS ${socket.id} ENERGISED`, 'ok');
   }

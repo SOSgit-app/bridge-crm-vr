@@ -150,8 +150,33 @@ export class CaptainStation extends StationBase {
     engine.events.on('readback', (e) => {
       this.verify.invalidate();
       if (e.type === 'open') sfx.tick();
-      else if (e.type === 'result' && e.result.state === 'correction') sfx.error();
+      else if (e.type === 'result') {
+        if (e.result.state === 'correction') sfx.error();
+        // Pre-flight check-off: a verified code ticks that station's item.
+        if (e.result.state === 'verified' && engine.preflight) {
+          const item = this.values.checklist.find((c) => c.role === e.result.role);
+          if (item && !item.done) {
+            item.done = true;
+            this.values.checklistDone = this.values.checklist.every((x) => x.done);
+          }
+        }
+        this.sitrep.invalidate();
+        this.status.invalidate();
+      }
     });
+    engine.events.on('preflight', (e) => {
+      if (e.verified) {
+        sfx.confirm();
+        this.bridge?.flash(0x6dff9c, 12, 1.5);
+      }
+      this.sitrep.invalidate();
+      this.verify.invalidate();
+      this.status.invalidate();
+    });
+  }
+
+  canEngage() {
+    return !!this.engine?.readyToEngage;
   }
 
   _drawVerify(ctx, w, h, p) {
@@ -169,7 +194,8 @@ export class CaptainStation extends StationBase {
     }
 
     p.text(win.title, 14, 52, { size: 18, color: PALETTE.amber, weight: 'bold' });
-    p.text(`CLOSES ${TimerManager.format(win.until)}  ·  ${Math.max(0, Math.ceil(win.until - t))}s`, w - 14, 54, { size: 14, align: 'right', color: t > win.until - 15 ? PALETTE.red : PALETTE.screenFg });
+    if (win.until == null) p.text('NO TIME LIMIT', w - 14, 54, { size: 14, align: 'right', color: PALETTE.screenFg });
+    else p.text(`CLOSES ${TimerManager.format(win.until)}  ·  ${Math.max(0, Math.ceil(win.until - t))}s`, w - 14, 54, { size: 14, align: 'right', color: t > win.until - 15 ? PALETTE.red : PALETTE.screenFg });
 
     const exp = rb.expectations(eng.ctx);
     if (!exp) {
@@ -195,6 +221,14 @@ export class CaptainStation extends StationBase {
       const detail = state === 'correction' ? st.hints[0]?.label : state === 'verified' ? st.code : standby ? 'no task on this route' : '';
       if (detail) p.text(detail, x + 118, yy + 17, { size: 12, color: PALETTE.screenDim });
     });
+    if (win.until == null && rb.allVerified(win.id, eng.ctx)) {
+      const yy = y + 86;
+      ctx.fillStyle = 'rgba(109,255,156,0.10)';
+      ctx.fillRect(8, yy - 6, w - 16, h - yy);
+      p.text('ALL STATIONS VERIFIED — ENGAGE ARMED', 14, yy, { size: 17, color: PALETTE.green, weight: 'bold' });
+      p.text('Count the crew in: "3, 2, 1, ENGAGE" — all consoles press together.', 14, yy + 24, { size: 13, color: PALETTE.white });
+      return;
+    }
     this._drawLastReadback(p, w, h, y + 86);
   }
 
@@ -296,23 +330,7 @@ export class CaptainStation extends StationBase {
       };
     });
     this.values.checklistDone = false;
-    this._spawnNodes(
-      this.values.checklist.map((c) => ({
-        id: c.id,
-        label: c.label.length > 6 ? c.label.slice(0, 3) : c.label,
-        sub: 'READY?',
-        color: c.role && ROLE_META[c.role] ? ROLE_META[c.role].color : 0xffb347,
-        onSelect: (node) => {
-          c.done = true;
-          node.setSelected(true);
-          this.values.checklistDone = this.values.checklist.every((x) => x.done);
-          this.sitrep.invalidate();
-          this.status?.invalidate();
-          if (this.values.checklistDone) setTimeout(() => this._clearNodes(), 1500);
-        },
-      })),
-      { arcZ: 0.3, spread: 0.19 }
-    );
+    // Items are checked off by verified CONFIG CODEs, not by tapping nodes.
     this.sitrep.invalidate();
   }
 
@@ -417,9 +435,19 @@ export class CaptainStation extends StationBase {
       p.text('Tap the matching node on the table.', 14, y + 60, { size: 13, color: PALETTE.screenFg });
       return;
     }
+    if (this.values.checklist.length && this.engine?.preflight && this.values.checklistDone) {
+      ctx.fillStyle = 'rgba(109,255,156,0.10)';
+      ctx.fillRect(8, y - 4, w - 16, h - y - 6);
+      p.text('ALL STATIONS VERIFIED', 14, y, { size: 18, color: PALETTE.green, weight: 'bold' });
+      y += 26;
+      wrapText(p, 'ENGAGE is armed on your console. Tell the crew: "All stations verified. Hands on ENGAGE. 3… 2… 1… ENGAGE." Everyone presses together.', 14, y, w - 28, 14, PALETTE.white, 4);
+      y += 80;
+      for (const c of this.values.checklist) p.text(`■ ${c.label}`, 14, (y += 17) - 17, { size: 13, color: PALETTE.green });
+      return;
+    }
     if (this.values.checklist.length && !this.values.checklistDone) {
-      p.text('CREW READINESS CHECK', 14, y, { size: 16, color: PALETTE.amber, weight: 'bold' });
-      p.text('READ ALOUD · TAP NODE WHEN READY', w - 14, y + 2, { size: 11, align: 'right', color: PALETTE.screenDim });
+      p.text('PRE-FLIGHT CHECK-OFF', 14, y, { size: 16, color: PALETTE.amber, weight: 'bold' });
+      p.text('NO CLOCK · CODES CHECK OFF ITEMS', w - 14, y + 2, { size: 11, align: 'right', color: PALETTE.screenDim });
       y += 22;
 
       const current = this.values.checklist.find((c) => !c.done);

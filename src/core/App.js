@@ -31,7 +31,7 @@ const LOCKOUT_RESTORE_SECONDS = 25;
 
 /**
  * Top-level state machine:
- *   ROLE_SELECT → CALIBRATE → STANDBY → RUNNING → COMPLETE → ROLE_SELECT
+ *   ROLE_SELECT → CALIBRATE → PREFLIGHT → RUNNING → COMPLETE → ROLE_SELECT
  * One headset, one role, one local ship model. Synchronisation with the
  * other four headsets is purely human: the Captain's verbal "ENGAGE".
  */
@@ -70,6 +70,7 @@ export class App {
       sfx.unlock();
       this.xr.recenter(this.role ? STATION_SEATS[this.role] : PODIUM_SEAT);
     });
+    bus.on('station:engage', () => this.engage());
     this.ship.events.on('lockout', ({ role }) => {
       // "Adjacent operator takes over": the frozen station comes back after a
       // fixed interval so the drill can continue.
@@ -115,24 +116,34 @@ export class App {
       seated: seat.seated,
       onRecenter: () => this.xr.recenter(seat),
       onReady: () => this._onReady(),
-      onEngage: () => this.engage(),
     });
     this.station.group.add(this.pedestal.group);
     bus.emit('app:phase', this.phase);
   }
 
+  /**
+   * STATION READY → pre-flight. The pedestal drops, the console goes live and
+   * pre-flight orders go out. No clock runs: the Captain verifies every
+   * station's CONFIG CODE, which arms ENGAGE on the Captain's console.
+   */
   _onReady() {
-    this.phase = APP_PHASE.STANDBY;
-    bus.emit('app:phase', this.phase);
-  }
-
-  engage() {
-    if (this.phase !== APP_PHASE.STANDBY) return;
-    this.phase = APP_PHASE.RUNNING;
+    if (this.phase !== APP_PHASE.CALIBRATE) return;
+    this.phase = APP_PHASE.PREFLIGHT;
     this.pedestal.hide();
     this.engine = new ScenarioEngine({ scenario: shakedown, timer: this.timer, ship: this.ship, role: this.role, station: this.station });
     this.station.attachEngine(this.engine);
     this.engine.events.on('complete', (summary) => this._complete(summary));
+    this.engine.startPreflight();
+    this.station.setPreflight(true);
+    bus.emit('app:phase', this.phase);
+  }
+
+  /** ENGAGE on the Captain's spoken count: every headset starts its clock at 00:00. */
+  engage() {
+    if (this.phase !== APP_PHASE.PREFLIGHT || !this.engine) return;
+    if (!this.station.canEngage()) return;
+    this.phase = APP_PHASE.RUNNING;
+    this.station.setPreflight(false);
     this.engine.start(); // t = 00:00
     bus.emit('app:phase', this.phase);
   }
@@ -181,7 +192,7 @@ export class App {
     this._setStationInteractive(false);
     const labels = {
       [APP_PHASE.CALIBRATE]: 'Calibrating view',
-      [APP_PHASE.STANDBY]: 'Waiting for ENGAGE',
+      [APP_PHASE.PREFLIGHT]: 'Pre-flight check-off',
       [APP_PHASE.RUNNING]: `Mission paused · T+${TimerManager.format(this.timer.t)}`,
       [APP_PHASE.COMPLETE]: 'Mission complete',
     };
@@ -210,6 +221,11 @@ export class App {
           c.setEnabled(false);
           continue;
         }
+        // ENGAGE is only live while shown in pre-flight (and armed).
+        if (c === this.station.engageButton) {
+          c.setEnabled(c.root.visible && this.station.canEngage());
+          continue;
+        }
         // Preserve lockout: only ACK stays live when the station is frozen.
         if (this.station.locked && c !== this.station.ackButton) c.setEnabled(false);
         else c.setEnabled(true);
@@ -221,7 +237,6 @@ export class App {
       return;
     }
     if (this.phase === APP_PHASE.CALIBRATE) this.pedestal.setPhase('CALIBRATE');
-    else if (this.phase === APP_PHASE.STANDBY) this.pedestal.setPhase('STANDBY');
     else if (this.phase === APP_PHASE.COMPLETE) {
       for (const c of this.pedestal.controls) c.setEnabled?.(c === this.pedestal.ready);
     } else {
@@ -236,6 +251,7 @@ export class App {
     if (this.xr.pollMenuButton()) this.togglePauseMenu();
     this.interaction.update(dt);
     if (this.phase === APP_PHASE.RUNNING && !this.paused) this.timer.advance(dt);
+    if (this.phase === APP_PHASE.PREFLIGHT && !this.paused) this.engine?.tickPreflight(dt);
     this.podium?.update(dt);
     if (!this.paused) this.pedestal?.update(dt);
     if (!this.paused) this.station?.update(dt);
@@ -292,10 +308,8 @@ export class App {
       const idx = Number(e.key) - 1;
       if (idx >= 0 && idx < ROLE_ORDER.length && this.phase === APP_PHASE.ROLE_SELECT) this.selectRole(ROLE_ORDER[idx]);
       if (e.key === 'r' || e.key === 'R') this.xr.recenter(this.role ? STATION_SEATS[this.role] : PODIUM_SEAT);
-      if (e.key === 'Enter' && this.phase === APP_PHASE.CALIBRATE) {
-        this.pedestal.setPhase('STANDBY');
-        this._onReady();
-      } else if (e.key === 'Enter' && this.phase === APP_PHASE.STANDBY) this.engage();
+      if (e.key === 'Enter' && this.phase === APP_PHASE.CALIBRATE) this._onReady();
+      else if (e.key === 'Enter' && this.phase === APP_PHASE.PREFLIGHT) this.engage();
     });
     window.addEventListener('pointerdown', () => sfx.unlock(), { once: true });
   }

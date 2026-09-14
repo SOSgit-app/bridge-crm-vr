@@ -98,10 +98,12 @@ export class SpaceScape {
       depthTest: true,
       uniforms: {
         uTime: { value: 0 },
-        uColorA: { value: new THREE.Color(0x12305c) },
-        uColorB: { value: new THREE.Color(0x5a2c93) },
-        uColorC: { value: new THREE.Color(0x2f8fd0) },
-        uDensity: { value: 1.0 },
+        // Deep space is black. The nebula is kept as a barely-there haze so
+        // weapon flashes still have something to light up.
+        uColorA: { value: new THREE.Color(0x060a14) },
+        uColorB: { value: new THREE.Color(0x0c0a16) },
+        uColorC: { value: new THREE.Color(0x0a1220) },
+        uDensity: { value: 0.35 },
       },
       vertexShader: /* glsl */ `
         varying vec3 vDir;
@@ -135,9 +137,9 @@ export class SpaceScape {
             col += c * dens * (1.0 - acc) * 0.85;
             acc += dens * 0.35;
           }
-          // Deep-space base gradient with a faint galactic band
-          float band = exp(-abs(d.y)*6.0) * 0.12;
-          vec3 base = vec3(0.004,0.008,0.02) + band*vec3(0.35,0.4,0.6);
+          // Black sky with the faintest galactic band
+          float band = exp(-abs(d.y)*7.0) * 0.03;
+          vec3 base = vec3(0.0, 0.0, 0.002) + band*vec3(0.5,0.5,0.6);
           gl_FragColor = vec4(base + col, 1.0);
         }`,
     });
@@ -148,33 +150,49 @@ export class SpaceScape {
   }
 
   _buildStars() {
-    const n = 2500;
+    // Real-sky look: a dense field of faint pinpoints, a sparse scatter of
+    // medium stars and a handful of bright ones. Neutral white, hard edges,
+    // no bloom. Stars only move with ship attitude (they are at infinity).
+    const n = 7000;
     const pos = new Float32Array(n * 3);
     const size = new Float32Array(n);
-    const col = new Float32Array(n * 3);
+    const bright = new Float32Array(n);
+    const v = new THREE.Vector3();
     for (let i = 0; i < n; i++) {
-      const v = new THREE.Vector3().randomDirection().multiplyScalar(150);
+      v.randomDirection().multiplyScalar(150);
       pos.set([v.x, v.y, v.z], i * 3);
-      size[i] = 0.6 + Math.random() * 2.2;
-      const warm = Math.random();
-      col.set([0.8 + warm * 0.2, 0.85 + Math.random() * 0.15, 1.0 - warm * 0.3], i * 3);
+      const r = Math.random();
+      if (r < 0.78) {
+        size[i] = 1.2 + Math.random() * 0.6;
+        bright[i] = 0.45 + Math.random() * 0.35;
+      } else if (r < 0.97) {
+        size[i] = 1.9 + Math.random() * 0.8;
+        bright[i] = 0.75 + Math.random() * 0.2;
+      } else {
+        size[i] = 2.8 + Math.random() * 1.1;
+        bright[i] = 1.0;
+      }
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
-    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.setAttribute('aBright', new THREE.BufferAttribute(bright, 1));
     const mat = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
       depthTest: true,
-      vertexColors: true,
-      uniforms: { uScale: { value: 1 } },
+      uniforms: { uPixelRatio: { value: Math.min(2, (typeof window !== 'undefined' && window.devicePixelRatio) || 1) } },
       vertexShader: /* glsl */ `
-        attribute float aSize; varying vec3 vColor;
-        void main(){ vColor = color; vec4 mv = modelViewMatrix*vec4(position,1.0); gl_PointSize = aSize*2.2; gl_Position = projectionMatrix*mv; }`,
+        attribute float aSize; attribute float aBright; uniform float uPixelRatio; varying float vBright;
+        void main(){ vBright = aBright; vec4 mv = modelViewMatrix*vec4(position,1.0); gl_PointSize = aSize*uPixelRatio; gl_Position = projectionMatrix*mv; }`,
       fragmentShader: /* glsl */ `
-        varying vec3 vColor;
-        void main(){ float d = length(gl_PointCoord-0.5); float a = smoothstep(0.5,0.1,d); gl_FragColor = vec4(vColor, a); }`,
+        varying float vBright;
+        void main(){
+          float d = length(gl_PointCoord-0.5);
+          float a = (1.0 - smoothstep(0.32, 0.5, d)) * vBright;
+          if (a < 0.02) discard;
+          gl_FragColor = vec4(vec3(0.94, 0.96, 1.0), a);
+        }`,
     });
     this.stars = new THREE.Points(geo, mat);
     this.stars.renderOrder = -2;
@@ -184,7 +202,9 @@ export class SpaceScape {
   _buildDust() {
     // Dust streams toward the ship from far ahead (-Z) in ship-local space,
     // wrapped so particles never cross the viewport plane into the cabin.
-    this.dustCount = 900;
+    // Sparse, dim, slow: just enough drifting motes to read the ship's
+    // speed at the viewport without looking like a warp tunnel.
+    this.dustCount = 160;
     this.dustBox = new THREE.Vector3(28, 14, 70);
     const pos = new Float32Array(this.dustCount * 3);
     for (let i = 0; i < this.dustCount; i++) this._spawnDust(pos, i, true);
@@ -194,15 +214,14 @@ export class SpaceScape {
       transparent: true,
       depthWrite: false,
       depthTest: true,
-      blending: THREE.AdditiveBlending,
-      uniforms: { uSpeed: { value: 0.3 }, uColor: { value: new THREE.Color(0x9fd0ff) } },
+      uniforms: { uSpeed: { value: 0.3 }, uColor: { value: new THREE.Color(0xcfd6e0) } },
       vertexShader: /* glsl */ `
         uniform float uSpeed; varying float vFade;
         void main(){
           vec4 mv = modelViewMatrix*vec4(position,1.0);
           float dist = -mv.z;
-          gl_PointSize = clamp(90.0/dist, 1.0, 6.0) * (1.0 + uSpeed*1.5);
-          vFade = smoothstep(70.0, 12.0, dist) * (0.35 + uSpeed*0.65);
+          gl_PointSize = clamp(40.0/dist, 1.0, 2.5);
+          vFade = smoothstep(70.0, 10.0, dist) * (0.10 + uSpeed*0.25);
           gl_Position = projectionMatrix*mv;
         }`,
       fragmentShader: /* glsl */ `
@@ -235,15 +254,18 @@ export class SpaceScape {
     for (let i = 0; i < this.trailCount; i++) this._spawnTrail(pos, i, true);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    const mat = new THREE.LineBasicMaterial({
-      color: 0x5ad0ff,
+    // Ion trails only appear when the throttle is pushed toward the stop
+    // (boost / warp); at cruise, deep space is still.
+    this.trailMat = new THREE.LineBasicMaterial({
+      color: 0x9fc4e0,
       transparent: true,
-      opacity: 0.35,
-      blending: THREE.AdditiveBlending,
+      opacity: 0,
       depthWrite: false,
       depthTest: true,
     });
+    const mat = this.trailMat;
     this.trails = new THREE.LineSegments(geo, mat);
+    this.trails.visible = false;
     this.trails.frustumCulled = false;
     this.trails.renderOrder = -1;
     this.fx.add(this.trails);
@@ -291,7 +313,8 @@ export class SpaceScape {
       }
     }
 
-    const speed = 6 + this.speed * 60;
+    // Cruise is slow; only the top of the throttle reads as fast.
+    const speed = 1.2 + this.speed * this.speed * 22;
     this.dustMat.uniforms.uSpeed.value = this.speed;
     const dp = this.dust.geometry.attributes.position;
     const cull = this.viewportCullZ;
@@ -303,17 +326,22 @@ export class SpaceScape {
     }
     dp.needsUpdate = true;
 
-    const tp = this.trails.geometry.attributes.position;
-    for (let i = 0; i < this.trailCount; i++) {
-      const v = (this.trailSpeeds[i] + this.speed * 60) * dt;
-      const z0 = tp.getZ(i * 2) + v;
-      if (z0 >= cull) this._spawnTrail(tp.array, i);
-      else {
-        tp.setZ(i * 2, z0);
-        tp.setZ(i * 2 + 1, tp.getZ(i * 2 + 1) + v);
+    const boost = THREE.MathUtils.clamp((this.speed - 0.75) / 0.25, 0, 1);
+    this.trailMat.opacity = boost * 0.3;
+    this.trails.visible = boost > 0.01;
+    if (this.trails.visible) {
+      const tp = this.trails.geometry.attributes.position;
+      for (let i = 0; i < this.trailCount; i++) {
+        const v = (this.trailSpeeds[i] * 0.5 + this.speed * 40) * dt;
+        const z0 = tp.getZ(i * 2) + v;
+        if (z0 >= cull) this._spawnTrail(tp.array, i);
+        else {
+          tp.setZ(i * 2, z0);
+          tp.setZ(i * 2 + 1, tp.getZ(i * 2 + 1) + v);
+        }
       }
+      tp.needsUpdate = true;
     }
-    tp.needsUpdate = true;
   }
 }
 

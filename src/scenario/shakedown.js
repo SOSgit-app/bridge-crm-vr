@@ -1,5 +1,5 @@
 import { ROLES } from '../core/Constants.js';
-import { verifyCode, verifyDial, verifyHeading, verifyVector } from '../sim/Verification.js';
+import { verifyDial, verifyHeading, verifyVector } from '../sim/Verification.js';
 
 const { CAPTAIN, HELM, TACTICAL, SCIENCE, ENGINEERING } = ROLES;
 
@@ -30,79 +30,94 @@ const dronePenalty = (ctx) => {
   ctx.station?.onImpact?.('DRONE HIT — TAKING FIRE');
 };
 
+// Phase 1 (pre-flight) has no clock. Each station configures for its check,
+// reads its CONFIG CODE to the Captain, and the Captain verifies all four.
+// Only then does the Captain's ENGAGE button arm; the mission clock starts
+// when the crew presses ENGAGE together on the Captain's count.
+const PREFLIGHT_READBACK = 'systems-check';
+
 export const shakedown = {
   id: 'shakedown',
   title: 'MIDSHIPMEN SHAKEDOWN CRUISE',
-  duration: 180,
+  duration: 135,
+
+  preflight: {
+    readback: PREFLIGHT_READBACK,
+    injects: [
+      {
+        id: 'pre-checklist', to: [CAPTAIN], title: 'PRE-FLIGHT CHECK-OFF', level: 'info',
+        message: 'Read each station\'s check aloud. When they report set, they read their CONFIG CODE — type it on the readback keypad. ENGAGE arms once all four verify.',
+        action: (ctx) =>
+          ctx.station.showChecklist?.([
+            { role: SCIENCE, call: 'Science — tune the wave dial to the navigation buoy carrier and call out the frequency.', verify: 'They call "100 MHz" and read their CONFIG CODE.' },
+            { role: TACTICAL, call: 'Tactical — set laser modulation to the buoy frequency Science just called.', verify: 'They confirm laser matched and read their CONFIG CODE.' },
+            { role: HELM, call: 'Helm — put the nose on the calibration marker, X:050 Y:000, and hold it.', verify: 'They confirm aligned and read their CONFIG CODE.' },
+            { role: ENGINEERING, call: 'Engineering — move the Auxiliary patch cable to Thrusters and confirm the breaker holds.', verify: 'They confirm Thrusters bus live and read their CONFIG CODE.' },
+          ]),
+      },
+      {
+        id: 'pre-buoy', to: [SCIENCE], title: 'PRE-FLIGHT · RAW SIGNAL', level: 'info',
+        message: 'Navigation buoy carrier on the analyzer. Tune the wave dial until the trace locks, call the frequency, then read your CONFIG CODE to the Captain.',
+        action: (ctx) => ctx.station.setSignal?.({ freq: KEYS.BUOY_FREQ, label: 'NAV BUOY', width: 6 }),
+      },
+      { id: 'pre-laser', to: [TACTICAL], title: 'PRE-FLIGHT · LASER CALIBRATION', level: 'info', message: 'Set laser modulation to the buoy frequency Science calls out, then read your CONFIG CODE to the Captain.' },
+      {
+        id: 'pre-helm', to: [HELM], title: 'PRE-FLIGHT · ALIGNMENT', level: 'info', message: 'Align the nose with the static marker at X:050 Y:000, hold steady, then read your CONFIG CODE to the Captain.',
+        action: (ctx) => ctx.station.setMarker?.({ bearing: KEYS.MARKER.bearing, pitch: KEYS.MARKER.pitch, label: 'CAL MARKER' }),
+      },
+      { id: 'pre-eng', to: [ENGINEERING], title: 'PRE-FLIGHT · BREAKER CHECK', level: 'info', message: 'Move the AUXILIARY patch cable to the THRUSTERS bus, confirm the breaker holds, then read your CONFIG CODE to the Captain.' },
+    ],
+    tasks: [
+      { id: 'pre-sci-buoy', role: SCIENCE, title: 'TUNE BUOY CARRIER', hint: 'Wave dial → lock · read CONFIG CODE', check: (c) => verifyDial(c.values.waveFreq, KEYS.BUOY_FREQ, 2) },
+      { id: 'pre-tac-laser', role: TACTICAL, title: 'MATCH LASER TO BUOY', hint: 'Laser dial to Science\'s frequency · read CONFIG CODE', check: (c) => verifyDial(c.values.laserFreq, KEYS.BUOY_FREQ, 2) },
+      { id: 'pre-helm-marker', role: HELM, title: 'NOSE ON MARKER X:050 Y:000', hint: 'Bearing 050, pitch 0 · hold · read CONFIG CODE', check: (c) => verifyVector(c.ship.attitude, KEYS.MARKER, { bearingTol: 4, pitchTol: 4 }) },
+      { id: 'pre-eng-thrusters', role: ENGINEERING, title: 'AUX CABLE → THRUSTERS', hint: 'Re-seat cable, breaker must hold · read CONFIG CODE', check: (c) => c.values.cableMoved === true && c.ship.power.THRUSTERS && c.ship.breakers.THRUSTERS },
+      { id: 'pre-cap-verify', role: CAPTAIN, title: 'VERIFY ALL 4 STATION CODES', hint: 'Type each CONFIG CODE · ENGAGE arms when all verify', check: (c) => c.readback.allVerified(PREFLIGHT_READBACK, c) },
+    ],
+    expect: () => ({
+      [SCIENCE]: { waveFreq: { value: KEYS.BUOY_FREQ, tol: 2, hint: `Wave dial must sit on the buoy carrier at ${KEYS.BUOY_FREQ} MHz — tune until the trace peaks.` } },
+      [TACTICAL]: { laserFreq: { value: KEYS.BUOY_FREQ, tol: 2, hint: `Laser/torpedo mod dial to ${KEYS.BUOY_FREQ} MHz, the frequency Science called.` } },
+      [HELM]: {
+        bearing: { value: KEYS.MARKER.bearing, tol: 4, wrap: true, hint: 'Yaw the nose onto the CAL MARKER — bearing 050 — and hold it while reading.' },
+        pitch: { value: KEYS.MARKER.pitch, tol: 4, hint: 'Level the pitch — marker is at Y:000.' },
+      },
+      [ENGINEERING]: {
+        power: { includes: ['THRUSTERS'], hint: 'Patch cable must be seated in the THRUSTERS socket.' },
+        breakers: { includes: ['MAIN', 'THRUSTERS'], hint: 'MAIN and THRUSTERS breakers must be closed (reset if tripped).' },
+      },
+    }),
+  },
 
   injects: [
-    { t: 0, id: 'engage', title: 'ENGAGE — SHAKEDOWN CRUISE UNDERWAY', message: 'All stations: run Phase 1 systems check.', level: 'ok' },
-    {
-      t: 10, id: 'checklist', to: [CAPTAIN], title: 'CREW DIAGNOSTIC CHECKLIST', level: 'info',
-      message: 'Read each station\'s check aloud in order. When they report ready, have them read their CONFIG CODE and type it on the readback keypad.',
-      action: (ctx) =>
-        ctx.station.showChecklist?.([
-          {
-            role: SCIENCE,
-            call: 'Science — tune the wave dial to the navigation buoy and call out the frequency.',
-            verify: 'They call "100 MHz", then read their CONFIG CODE — type it on the readback keypad.',
-          },
-          {
-            role: TACTICAL,
-            call: 'Tactical — set laser modulation to the buoy frequency Science just called.',
-            verify: 'They confirm laser matched to buoy and read their CONFIG CODE.',
-          },
-          {
-            role: HELM,
-            call: 'Helm — put the nose on the calibration marker, X:050 Y:000.',
-            verify: 'They confirm aligned on marker and read their CONFIG CODE.',
-          },
-          {
-            role: ENGINEERING,
-            call: 'Engineering — move the Auxiliary patch cable to Thrusters and confirm the breaker holds.',
-            verify: 'They confirm Thrusters bus live and read their CONFIG CODE.',
-          },
-        ]),
-    },
-    {
-      t: 20, id: 'buoy-signal', to: [SCIENCE], title: 'RAW SIGNAL DETECTED', level: 'info',
-      message: 'Navigation buoy carrier on the analyzer. Tune the wave dial until the trace locks, then call the frequency to the bridge.',
-      action: (ctx) => ctx.station.setSignal?.({ freq: KEYS.BUOY_FREQ, label: 'NAV BUOY', width: 6 }),
-    },
-    { t: 30, id: 'laser-cal', to: [TACTICAL], title: 'LASER CALIBRATION', level: 'info', message: 'Set laser modulation to the buoy frequency called out by Science.' },
-    {
-      t: 40, id: 'helm-align', to: [HELM], title: 'ALIGNMENT MARKER', level: 'info', message: 'Align the nose with the static marker at X:050 Y:000.',
-      action: (ctx) => ctx.station.setMarker?.({ bearing: KEYS.MARKER.bearing, pitch: KEYS.MARKER.pitch, label: 'CAL MARKER' }),
-    },
-    { t: 50, id: 'eng-breaker', to: [ENGINEERING], title: 'BREAKER STABILITY CHECK', level: 'info', message: 'Move the AUXILIARY patch cable to the THRUSTERS bus and confirm the breaker holds.' },
+    { t: 0, id: 'engage', title: 'ENGAGE — SHAKEDOWN CRUISE UNDERWAY', message: 'Pre-flight complete. Stations hold configuration and stand by for events.', level: 'ok' },
 
     {
-      t: 60, id: 'asteroid', title: 'ROGUE ASTEROID — COLLISION COURSE', level: 'critical',
+      t: 15, id: 'asteroid', title: 'ROGUE ASTEROID — COLLISION COURSE', level: 'critical',
       message: 'Impact in 45 seconds. Await the Captain\'s directive, then read back your CONFIG CODE.',
       action: (ctx) => {
         ctx.station.setThreat?.({ kind: 'asteroid', bearing: 10, pitch: -5, eta: 45 });
         ctx.station.setSignal?.({ freq: KEYS.ASTEROID_RETURN_FREQ, label: 'ASTEROID RETURN', width: 5 });
       },
     },
-    { t: 105, id: 'asteroid-window', title: 'ASTEROID EXECUTION WINDOW CLOSED', level: 'warn', message: 'Outcome determined by station actions.', action: (ctx) => ctx.station.clearThreat?.() },
+    { t: 60, id: 'asteroid-window', title: 'ASTEROID EXECUTION WINDOW CLOSED', level: 'warn', message: 'Outcome determined by station actions.', action: (ctx) => ctx.station.clearThreat?.() },
 
     {
-      t: 120, id: 'drone-lock', title: 'ARMED DRONE — TARGET LOCK ON US', level: 'critical',
+      t: 75, id: 'drone-lock', title: 'ARMED DRONE — TARGET LOCK ON US', level: 'critical',
       message: 'Hostile drone has acquired a weapons lock. Captain to select combat route.',
       action: (ctx) => {
         ctx.station.setThreat?.({ kind: 'drone', bearing: KEYS.DRONE_BEARING, pitch: KEYS.DRONE_PITCH, eta: 60, lock: true });
         ctx.station.setSignal?.({ freq: KEYS.DRONE_SHIELD_FREQ, label: 'DRONE SHIELD MOD', width: 4 });
       },
     },
-    { t: 130, id: 'drone-route', to: [CAPTAIN], title: 'SELECT COMBAT ROUTE', level: 'warn', message: 'Three routes on the Holo-Table. Choose, then issue directives with the embedded key.' },
-    { t: 150, id: 'drone-exec', title: 'EXECUTE', level: 'warn', message: 'Execution window open. Stations: read your CONFIG CODE to the Captain for verification.' },
-    { t: 165, id: 'drone-fire', to: [TACTICAL], title: 'FIRE WHEN READY', level: 'critical', message: 'Pull the launch handle once torpedoes are armed and modulated.' },
-    { t: 180, id: 'complete', title: 'MISSION COMPLETE', level: 'ok', message: 'Shakedown cruise concluded. Stand down from stations.' },
+    { t: 85, id: 'drone-route', to: [CAPTAIN], title: 'SELECT COMBAT ROUTE', level: 'warn', message: 'Three routes on the Holo-Table. Choose, then issue directives with the embedded key.' },
+    { t: 105, id: 'drone-exec', title: 'EXECUTE', level: 'warn', message: 'Execution window open. Stations: read your CONFIG CODE to the Captain for verification.' },
+    { t: 120, id: 'drone-fire', to: [TACTICAL], title: 'FIRE WHEN READY', level: 'critical', message: 'Pull the launch handle once torpedoes are armed and modulated.' },
+    { t: 135, id: 'complete', title: 'MISSION COMPLETE', level: 'ok', message: 'Shakedown cruise concluded. Stand down from stations.' },
   ],
 
   decisions: [
     {
-      id: 'asteroid', t: 60, until: 105, title: 'ROGUE ASTEROID',
+      id: 'asteroid', t: 15, until: 60, title: 'ROGUE ASTEROID',
       situation: 'Asteroid on collision course, impact T+45s.',
       options: [
         {
@@ -118,7 +133,7 @@ export const shakedown = {
       ],
     },
     {
-      id: 'drone', t: 130, until: 165, title: 'ARMED DRONE — COMBAT ROUTE',
+      id: 'drone', t: 85, until: 120, title: 'ARMED DRONE — COMBAT ROUTE',
       situation: 'Drone has weapons lock. Plasma strike expected T+50s.',
       options: [
         {
@@ -147,22 +162,7 @@ export const shakedown = {
   // `standby` have nothing to verify on that route.
   readbacks: [
     {
-      id: 'systems-check', from: 10, until: 60, title: 'PHASE 1 · SYSTEMS CHECK',
-      expect: () => ({
-        [SCIENCE]: { waveFreq: { value: KEYS.BUOY_FREQ, tol: 2, hint: `Wave dial must sit on the buoy carrier at ${KEYS.BUOY_FREQ} MHz — tune until the trace peaks.` } },
-        [TACTICAL]: { laserFreq: { value: KEYS.BUOY_FREQ, tol: 2, hint: `Laser/torpedo mod dial to ${KEYS.BUOY_FREQ} MHz, the frequency Science called.` } },
-        [HELM]: {
-          bearing: { value: KEYS.MARKER.bearing, tol: 4, wrap: true, hint: 'Yaw the nose onto the CAL MARKER — bearing 050.' },
-          pitch: { value: KEYS.MARKER.pitch, tol: 4, hint: 'Level the pitch — marker is at Y:000.' },
-        },
-        [ENGINEERING]: {
-          power: { includes: ['THRUSTERS'], hint: 'Patch cable must be seated in the THRUSTERS socket.' },
-          breakers: { includes: ['MAIN', 'THRUSTERS'], hint: 'MAIN and THRUSTERS breakers must be closed (reset if tripped).' },
-        },
-      }),
-    },
-    {
-      id: 'asteroid', from: 60, until: 105, title: 'PHASE 2 · ASTEROID',
+      id: 'asteroid', from: 15, until: 60, title: 'PHASE 2 · ASTEROID',
       expect: (c) => {
         if (c.choices.asteroid === 'blast') {
           return {
@@ -190,7 +190,7 @@ export const shakedown = {
       },
     },
     {
-      id: 'drone', from: 130, until: 175, title: 'PHASE 3 · DRONE',
+      id: 'drone', from: 85, until: 130, title: 'PHASE 3 · DRONE',
       expect: (c) => {
         const sci = { lockedFreq: { value: KEYS.DRONE_SHIELD_FREQ, tol: 3, hint: `Lock the DRONE SHIELD MOD signal at ${KEYS.DRONE_SHIELD_FREQ} MHz.` } };
         if (c.choices.drone === 'kinetic') {
@@ -247,7 +247,7 @@ export const shakedown = {
 
   debriefs: [
     {
-      id: 'asteroid-report', t: 106, until: 119, title: 'CREW REPORT — ASTEROID', readback: 'asteroid', autoSuccess: 'cleared',
+      id: 'asteroid-report', t: 61, until: 74, title: 'CREW REPORT — ASTEROID', readback: 'asteroid', autoSuccess: 'cleared',
       prompt: 'Ask the crew: was the directive executed in the window?',
       options: [
         { id: 'cleared', label: 'CLEARED', effect: (ctx) => ctx.ship.logEvent(ctx.t, 'Asteroid cleared per crew report', 'ok') },
@@ -255,7 +255,7 @@ export const shakedown = {
       ],
     },
     {
-      id: 'drone-report', t: 172, until: 180, title: 'CREW REPORT — DRONE', readback: 'drone', autoSuccess: 'destroyed',
+      id: 'drone-report', t: 127, until: 135, title: 'CREW REPORT — DRONE', readback: 'drone', autoSuccess: 'destroyed',
       prompt: 'Ask Tactical: did the shot connect?',
       options: [
         { id: 'destroyed', label: 'DRONE DESTROYED', effect: (ctx) => ctx.ship.logEvent(ctx.t, 'Drone destroyed per crew report', 'ok') },
@@ -265,50 +265,42 @@ export const shakedown = {
   ],
 
   tasks: [
-    // ---- Phase 1: systems check (no penalty) -----------------------------
-    { id: 'sci-buoy', role: SCIENCE, from: 20, until: 60, title: 'TUNE BUOY CARRIER', hint: `Wave dial → lock, then call it out`, check: (c) => verifyDial(c.values.waveFreq, KEYS.BUOY_FREQ, 2) },
-    { id: 'tac-laser-cal', role: TACTICAL, from: 30, until: 60, title: 'MATCH LASER TO BUOY', hint: 'Laser dial to Science\'s frequency', check: (c) => verifyDial(c.values.laserFreq, KEYS.BUOY_FREQ, 2) },
-    { id: 'helm-marker', role: HELM, from: 40, until: 60, title: 'NOSE ON MARKER X:050 Y:000', hint: 'Bearing 050, pitch 0', check: (c) => verifyVector(c.ship.attitude, KEYS.MARKER, { bearingTol: 4, pitchTol: 4 }) },
-    { id: 'eng-thrusters', role: ENGINEERING, from: 50, until: 60, title: 'AUX CABLE → THRUSTERS', hint: 'Re-seat cable, breaker must hold', check: (c) => c.values.cableMoved === true && c.ship.power.THRUSTERS && c.ship.breakers.THRUSTERS },
-    { id: 'cap-checklist', role: CAPTAIN, from: 10, until: 60, title: 'COMPLETE CREW CHECKLIST', hint: 'Read each call aloud; tap the node when they report ready', check: (c) => c.values.checklistDone === true },
-    { id: 'cap-readback-1', role: CAPTAIN, from: 10, until: 60, title: 'VERIFY 4 STATION READBACKS', hint: 'Type each station\'s CONFIG CODE on the readback keypad', check: (c) => c.readback.allVerified('systems-check', c) },
-
     // ---- Phase 2: asteroid (branch alternatives, 10% shield penalty) ------
-    { id: 'tac-pd', role: TACTICAL, from: 60, until: 105, title: 'UNLOCK POINT-DEFENSE', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'PD key + handle, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'blast' }, allowStandby: true, penalty: asteroidPenalty,
+    { id: 'tac-pd', role: TACTICAL, from: 15, until: 60, title: 'UNLOCK POINT-DEFENSE', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'PD key + handle, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'blast' }, allowStandby: true, penalty: asteroidPenalty,
       check: (c) => c.values.acceptedKeys?.has(KEYS.ASTEROID_KEY) && c.values.pdFired === true },
-    { id: 'sci-asteroid', role: SCIENCE, from: 60, until: 105, title: 'SENSOR LOCK ON ASTEROID', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'Lock asteroid return, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'blast' }, allowStandby: true, penalty: asteroidPenalty,
+    { id: 'sci-asteroid', role: SCIENCE, from: 15, until: 60, title: 'SENSOR LOCK ON ASTEROID', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'Lock asteroid return, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'blast' }, allowStandby: true, penalty: asteroidPenalty,
       check: (c) => c.values.lockedFreq != null && verifyDial(c.values.lockedFreq, KEYS.ASTEROID_RETURN_FREQ, 3) },
-    { id: 'helm-evade', role: HELM, from: 60, until: 105, title: 'HARD TURN TO VECTOR 180', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'Turn to ordered vector, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'evade' }, allowStandby: true, penalty: asteroidPenalty,
+    { id: 'helm-evade', role: HELM, from: 15, until: 60, title: 'HARD TURN TO VECTOR 180', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'Turn to ordered vector, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'evade' }, allowStandby: true, penalty: asteroidPenalty,
       check: (c) => verifyHeading(c.ship.attitude.bearing, KEYS.ASTEROID_VECTOR, 5) },
-    { id: 'eng-boost', role: ENGINEERING, from: 60, until: 105, title: 'BOOST THRUSTERS', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'Thrusters powered + BOOST, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'evade' }, allowStandby: true, penalty: asteroidPenalty,
+    { id: 'eng-boost', role: ENGINEERING, from: 15, until: 60, title: 'BOOST THRUSTERS', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'Thrusters powered + BOOST, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'evade' }, allowStandby: true, penalty: asteroidPenalty,
       check: (c) => c.ship.power.THRUSTERS && c.ship.breakers.BOOST && c.ship.breakers.MAIN },
-    { id: 'cap-asteroid', role: CAPTAIN, from: 60, until: 105, title: 'SELECT ASTEROID ROUTE', hint: 'Tap a route node, issue the directive', check: (c) => !!c.choices.asteroid },
-    { id: 'cap-readback-asteroid', role: CAPTAIN, from: 60, until: 105, title: 'VERIFY ASTEROID READBACKS', hint: 'Collect CONFIG CODES from the tasked stations', check: (c) => c.readback.allVerified('asteroid', c) },
+    { id: 'cap-asteroid', role: CAPTAIN, from: 15, until: 60, title: 'SELECT ASTEROID ROUTE', hint: 'Tap a route node, issue the directive', check: (c) => !!c.choices.asteroid },
+    { id: 'cap-readback-asteroid', role: CAPTAIN, from: 15, until: 60, title: 'VERIFY ASTEROID READBACKS', hint: 'Collect CONFIG CODES from the tasked stations', check: (c) => c.readback.allVerified('asteroid', c) },
 
     // ---- Phase 3: drone (branch alternatives, hull damage penalty) --------
-    { id: 'sci-drone', role: SCIENCE, from: 130, until: 175, title: 'DECODE DRONE SHIELD FREQUENCY', groupTitle: 'DRONE — AWAIT DIRECTIVE', groupHint: 'Decode shield modulation, or ACK STANDBY', branch: { decisionId: 'drone', optionId: 'kinetic' }, allowStandby: true, penalty: dronePenalty,
+    { id: 'sci-drone', role: SCIENCE, from: 85, until: 130, title: 'DECODE DRONE SHIELD FREQUENCY', groupTitle: 'DRONE — AWAIT DIRECTIVE', groupHint: 'Decode shield modulation, or ACK STANDBY', branch: { decisionId: 'drone', optionId: 'kinetic' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => c.values.lockedFreq != null && verifyDial(c.values.lockedFreq, KEYS.DRONE_SHIELD_FREQ, 3) },
-    { id: 'sci-drone-b', role: SCIENCE, from: 130, until: 175, title: 'DECODE DRONE SHIELD FREQUENCY', branch: { decisionId: 'drone', optionId: 'ewar' }, allowStandby: true, penalty: dronePenalty,
+    { id: 'sci-drone-b', role: SCIENCE, from: 85, until: 130, title: 'DECODE DRONE SHIELD FREQUENCY', branch: { decisionId: 'drone', optionId: 'ewar' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => c.values.lockedFreq != null && verifyDial(c.values.lockedFreq, KEYS.DRONE_SHIELD_FREQ, 3) },
-    { id: 'tac-torpedo', role: TACTICAL, from: 130, until: 175, title: 'ARM + MODULATE + LAUNCH', groupTitle: 'DRONE — AWAIT DIRECTIVE', groupHint: 'Key on keypad, dial to Science freq, pull launch', branch: { decisionId: 'drone', optionId: 'kinetic' }, allowStandby: true, penalty: dronePenalty,
-      check: (c) => c.values.acceptedKeys?.has(KEYS.DRONE_ARM_KEY) && verifyDial(c.values.laserFreq, KEYS.DRONE_SHIELD_FREQ, 3) && c.values.launchedAt != null && c.values.launchedAt >= 150,
+    { id: 'tac-torpedo', role: TACTICAL, from: 85, until: 130, title: 'ARM + MODULATE + LAUNCH', groupTitle: 'DRONE — AWAIT DIRECTIVE', groupHint: 'Key on keypad, dial to Science freq, pull launch', branch: { decisionId: 'drone', optionId: 'kinetic' }, allowStandby: true, penalty: dronePenalty,
+      check: (c) => c.values.acceptedKeys?.has(KEYS.DRONE_ARM_KEY) && verifyDial(c.values.laserFreq, KEYS.DRONE_SHIELD_FREQ, 3) && c.values.launchedAt != null && c.values.launchedAt >= 105,
       onSuccess: (c) => c.station.onKill?.('DRONE DESTROYED') },
-    { id: 'tac-ecm', role: TACTICAL, from: 130, until: 175, title: 'ECM JAM ON DRONE FREQUENCY', branch: { decisionId: 'drone', optionId: 'ewar' }, allowStandby: true, penalty: dronePenalty,
+    { id: 'tac-ecm', role: TACTICAL, from: 85, until: 130, title: 'ECM JAM ON DRONE FREQUENCY', branch: { decisionId: 'drone', optionId: 'ewar' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => c.values.acceptedKeys?.has(KEYS.DRONE_ECM_KEY) && verifyDial(c.values.ecmFreq, KEYS.DRONE_SHIELD_FREQ, 3) && c.values.jamming === true },
-    { id: 'tac-warp', role: TACTICAL, from: 130, until: 175, title: 'WARP OVERRIDE KEY', branch: { decisionId: 'drone', optionId: 'escape' }, allowStandby: true, penalty: dronePenalty,
+    { id: 'tac-warp', role: TACTICAL, from: 85, until: 130, title: 'WARP OVERRIDE KEY', branch: { decisionId: 'drone', optionId: 'escape' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => c.values.acceptedKeys?.has(KEYS.DRONE_WARP_KEY) },
-    { id: 'eng-weapons', role: ENGINEERING, from: 130, until: 175, title: 'WEAPONS MAXIMUM POWER', groupTitle: 'DRONE — AWAIT DIRECTIVE', groupHint: 'Route the ordered bus, manage thermal', branch: { decisionId: 'drone', optionId: 'kinetic' }, allowStandby: true, penalty: dronePenalty,
+    { id: 'eng-weapons', role: ENGINEERING, from: 85, until: 130, title: 'WEAPONS MAXIMUM POWER', groupTitle: 'DRONE — AWAIT DIRECTIVE', groupHint: 'Route the ordered bus, manage thermal', branch: { decisionId: 'drone', optionId: 'kinetic' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => c.ship.power.WEAPONS && c.ship.breakers.WEAPONS && c.ship.breakers.MAIN && c.ship.thermal < 100 },
-    { id: 'eng-sensors', role: ENGINEERING, from: 130, until: 175, title: 'POWER TO SENSORS', branch: { decisionId: 'drone', optionId: 'ewar' }, allowStandby: true, penalty: dronePenalty,
+    { id: 'eng-sensors', role: ENGINEERING, from: 85, until: 130, title: 'POWER TO SENSORS', branch: { decisionId: 'drone', optionId: 'ewar' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => c.ship.power.SENSORS && c.ship.breakers.MAIN },
-    { id: 'eng-warp', role: ENGINEERING, from: 130, until: 175, title: 'THRUSTERS + BOOST FOR WARP', branch: { decisionId: 'drone', optionId: 'escape' }, allowStandby: true, penalty: dronePenalty,
+    { id: 'eng-warp', role: ENGINEERING, from: 85, until: 130, title: 'THRUSTERS + BOOST FOR WARP', branch: { decisionId: 'drone', optionId: 'escape' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => c.ship.power.THRUSTERS && c.ship.breakers.BOOST && c.ship.breakers.MAIN },
-    { id: 'helm-reticle', role: HELM, from: 130, until: 175, title: 'DRONE IN RETICLE', groupTitle: 'DRONE — AWAIT DIRECTIVE', groupHint: 'Put the target in the reticle or fly the ordered vector', branch: { decisionId: 'drone', optionId: 'kinetic' }, allowStandby: true, penalty: dronePenalty,
+    { id: 'helm-reticle', role: HELM, from: 85, until: 130, title: 'DRONE IN RETICLE', groupTitle: 'DRONE — AWAIT DIRECTIVE', groupHint: 'Put the target in the reticle or fly the ordered vector', branch: { decisionId: 'drone', optionId: 'kinetic' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => verifyVector(c.ship.attitude, { bearing: KEYS.DRONE_BEARING, pitch: KEYS.DRONE_PITCH }, { bearingTol: 5, pitchTol: 5 }) },
-    { id: 'helm-escape', role: HELM, from: 130, until: 175, title: 'ESCAPE VECTOR 270 FULL THROTTLE', branch: { decisionId: 'drone', optionId: 'escape' }, allowStandby: true, penalty: dronePenalty,
+    { id: 'helm-escape', role: HELM, from: 85, until: 130, title: 'ESCAPE VECTOR 270 FULL THROTTLE', branch: { decisionId: 'drone', optionId: 'escape' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => verifyHeading(c.ship.attitude.bearing, KEYS.DRONE_ESCAPE_VECTOR, 5) && c.ship.throttle > 0.9 },
-    { id: 'cap-drone', role: CAPTAIN, from: 130, until: 165, title: 'SELECT COMBAT ROUTE', hint: 'Choose A / B / C and issue directives', check: (c) => !!c.choices.drone },
-    { id: 'cap-readback-drone', role: CAPTAIN, from: 130, until: 175, title: 'VERIFY COMBAT READBACKS', hint: 'Collect CONFIG CODES before FIRE / EXECUTE', check: (c) => c.readback.allVerified('drone', c) },
+    { id: 'cap-drone', role: CAPTAIN, from: 85, until: 120, title: 'SELECT COMBAT ROUTE', hint: 'Choose A / B / C and issue directives', check: (c) => !!c.choices.drone },
+    { id: 'cap-readback-drone', role: CAPTAIN, from: 85, until: 130, title: 'VERIFY COMBAT READBACKS', hint: 'Collect CONFIG CODES before FIRE / EXECUTE', check: (c) => c.readback.allVerified('drone', c) },
   ],
 
   step: (ctx, dt) => {
@@ -317,5 +309,5 @@ export const shakedown = {
     ctx.ship.step(dt, ctx.t, { weaponsArmed: armed, firing: false });
   },
 
-  end: { t: 180, success: (ctx) => ctx.ship.alive },
+  end: { t: 135, success: (ctx) => ctx.ship.alive },
 };

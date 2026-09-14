@@ -28,7 +28,7 @@ The game never contacts a server at runtime. Two ways to run it with no network 
 
 ### Desktop test mode
 
-Open the page in a desktop browser. Drag to look, click to press, drag on dials / levers / joysticks / cables. Shortcuts: `1`–`5` pick a role, `R` recenters, `Enter` advances READY → ENGAGE, `Esc` opens the pause menu (Resume / Main Menu · Change Role). In VR, the Quest **B** (right) or **Y** (left) button toggles the same menu.
+Open the page in a desktop browser. Drag to look, click to press, drag on dials / levers / joysticks / cables. Shortcuts: `1`–`5` pick a role, `R` recenters, `Enter` advances STATION READY → ENGAGE (the Captain's ENGAGE still requires all four codes verified), `Esc` opens the pause menu (Resume / Main Menu · Change Role). In VR, the Quest **B** (right) or **Y** (left) button toggles the same menu.
 
 ---
 
@@ -39,8 +39,15 @@ Room (no headsets)   Assign 1 Captain + Helm, Tactical, Science, Engineering. Si
 Role select          Briefing podium: tap your pre-assigned role plate.        (RoleSelectPodium)
 Calibrate            The station loads; tap RECENTER SEATED VIEW until the console is square in front of you,
                      then STATION READY.                                       (StandbyPedestal, XRRig.recenter)
-Standby              High-contrast STANDBY / WAITING FOR ENGAGE display + ENGAGE button.
-ENGAGE               Captain counts aloud. All 5 tap together. Each headset's TimerManager starts at t = 00:00.
+Pre-flight           No clock. The pedestal drops and the console goes live with its pre-flight order
+                     (Science tune 100 MHz, Tactical match laser, Helm nose on marker, Engineering cable →
+                     THRUSTERS). Each operator configures, then reads the CONFIG CODE to the Captain, who
+                     types it on the readback keypad. A verified code checks that station off the Captain's
+                     list; a wrong one names the field and a hint to relay. There is nothing to tap on the
+                     Holo-Table — the codes ARE the check-off.
+ENGAGE               A palm-sized ENGAGE button sits on every console during pre-flight. The Captain's arms
+                     only once all four codes verify; the Captain counts aloud and all 5 press together.
+                     Each headset's TimerManager starts at t = 00:00.
 Running              Scenario injects fire at exact timestamps. Captain speaks Situation / Intent / Directives with
                      embedded keys; crew executes on physical controls; stations verify locally.
                      B / Y (Quest) or Esc opens pause → Resume or Main Menu / Change Role.
@@ -55,7 +62,7 @@ Complete             MISSION SUCCESS / FAILED banner + per-station grade. STAND 
 src/
   main.js                       entry, service worker registration
   core/
-    App.js                      phase state machine ROLE_SELECT → CALIBRATE → STANDBY → RUNNING → COMPLETE
+    App.js                      phase state machine ROLE_SELECT → CALIBRATE → PREFLIGHT → RUNNING → COMPLETE
     XRRig.js                    renderer, XR session, camera rig, recenter, FFR, desktop mouse-look
     Interaction.js              InteractionManager + Interactable base (controllers, hand pinch/poke, mouse)
     Constants.js                roles, seat positions, palette
@@ -67,7 +74,7 @@ src/
     ShipState.js                local ship truth: hull, shield arcs, power buses, breakers, thermal, attitude, lockouts
     Verification.js             verifyCode / verifyDial / verifyHeading / verifyVector / routing / grading
   scenario/
-    shakedown.js                "Midshipmen Shakedown Cruise" — 3 phases, 00:00 → 03:00
+    shakedown.js                "Midshipmen Shakedown Cruise" — untimed pre-flight, then 00:00 → 02:15
   controls/                     diegetic 3D controls (no 2D overlay anywhere)
     PushButton, RotaryDial, Lever, Keypad, Joystick, PatchCable(+Socket), BreakerSwitch, IndicatorLight,
     HoloNode, ScreenPanel (canvas texture inside a physical bezel), Label, Materials
@@ -86,7 +93,7 @@ src/
     Particles.js                pooled emitters: sparks, steam, smoke, holo static; DamageFX bundle
   ui/
     RoleSelectPodium.js         role plates + recenter
-    StandbyPedestal.js          calibrate → standby/ENGAGE → result
+    StandbyPedestal.js          calibrate pedestal → drops for pre-flight/mission → rises with result
 tools/bake-ao.mjs               `npm run bake` (Node) → public/baked/bridge-ao.json
 tests/sim.test.mjs              `npm test`
 ```
@@ -120,7 +127,7 @@ Each headset runs its own `ShipState` and only sees its own console. Three mecha
 
 | Station | Physical controls | Exclusive telemetry | Verified values |
 |---|---|---|---|
-| **Command** | Holo-Table decision / debrief / checklist hex nodes, ACK | Theater map, global hull & shields, component status, Situation / Intent / Directives, **command keys** | Route chosen in window, checklist complete |
+| **Command** | Holo-Table decision / debrief hex nodes, base-32 readback keypad, ACK | Theater map, global hull & shields, component status, Situation / Intent / Directives, **command keys**, readback verification | All 4 pre-flight codes verified; route chosen in window; tasked stations verified |
 | **Helm** | Left stick (pitch/yaw), right stick (roll/trim), throttle lever | Bearing tape, pitch ladder, roll, target reticle, debris/collision lights | `ship.attitude` vs ordered vector (±4–5°) |
 | **Tactical** | Alnum keypad, LASER/TORPEDO dial, ECM dial, 4 shield-arc buttons, ECM JAM, POINT DEFENSE spring handle, TORPEDO LAUNCH latch handle | Target lock reticle, shield arc strengths, INBOUND LOCK, arming lights | `acceptedKeys`, `laserFreq`/`ecmFreq` (±3 MHz), `pdFired`, `launchedAt`, `jamming` |
 | **Science** | WAVE TUNING dial, SENSOR LOCK button, holographic beat display | Spectrum analyzer with raw signal peaks, decoded frequency readout | `lockedFreq` == signal (±3 MHz) |
@@ -141,21 +148,22 @@ Keys typed on the keypad accept the full form (`DELTA-9`), spaced (`delta 9`) or
 
 | t | Event | Who acts | Verified value |
 |---|---|---|---|
-| 00:10 | Crew diagnostic checklist on Holo-Table | Captain | taps 4 nodes as crew reports |
-| 00:20 | Raw buoy signal | Science | wave dial → **100 MHz**, calls it out |
-| 00:30 | Laser calibration | Tactical | LASER dial → 100 MHz |
-| 00:40 | Alignment marker X:050 Y:000 | Helm | bearing 050, pitch 0 |
-| 00:50 | Breaker stability | Engineering | AUX cable → THRUSTERS |
-| 01:00 | **Rogue asteroid** | Captain picks BLAST IT (key **ALPHA-1**: Tactical PD + Science lock 215 MHz) or EVADE IT (**VECTOR 180**: Helm turn + Engineering BOOST) | window closes 01:45, else −10% shields |
-| 01:46 | Crew report | Captain | CLEARED / IMPACT |
-| 02:00 | **Armed drone lock** | all alerted | |
-| 02:10 | Combat route | Captain: A kinetic **DELTA-9** / B electronic **ECHO-3** / C escape **WARP-7 · VECTOR 270** | |
-| 02:30 | Execute | Science decodes **340 MHz**; Tactical keys DELTA-9, dial 340; Engineering cable → WEAPONS; Helm reticle 320/+10 | |
-| 02:45 | Fire | Tactical pulls launch handle → drone destroyed | window closes 02:55 |
-| 02:52 | Crew report | Captain | DESTROYED / WE TOOK THE HIT |
-| 03:00 | Mission complete | all | grade per station |
+| PRE | Raw buoy signal | Science | wave dial → **100 MHz**, calls it out, reads CONFIG CODE |
+| PRE | Laser calibration | Tactical | LASER dial → 100 MHz, reads CONFIG CODE |
+| PRE | Alignment marker X:050 Y:000 | Helm | bearing 050, pitch 0, reads CONFIG CODE |
+| PRE | Breaker stability | Engineering | AUX cable → THRUSTERS, reads CONFIG CODE |
+| PRE | Check-off | Captain | types all 4 codes; ENGAGE arms when all verify |
+| 00:00 | **ENGAGE** | all 5 together on the Captain's count | |
+| 00:15 | **Rogue asteroid** | Captain picks BLAST IT (key **ALPHA-1**: Tactical PD + Science lock 215 MHz) or EVADE IT (**VECTOR 180**: Helm turn + Engineering BOOST) | window closes 01:00, else −10% shields |
+| 01:01 | Crew report | Captain | CLEARED / IMPACT (auto-CLEARED if readbacks verified) |
+| 01:15 | **Armed drone lock** | all alerted | |
+| 01:25 | Combat route | Captain: A kinetic **DELTA-9** / B electronic **ECHO-3** / C escape **WARP-7 · VECTOR 270** | |
+| 01:45 | Execute | Science decodes **340 MHz**; Tactical keys DELTA-9, dial 340; Engineering cable → WEAPONS; Helm reticle 320/+10 | |
+| 02:00 | Fire | Tactical pulls launch handle → drone destroyed | window closes 02:10 |
+| 02:07 | Crew report | Captain | DESTROYED / WE TOOK THE HIT |
+| 02:15 | Mission complete | all | grade per station (pre-flight items count) |
 
-Codes and frequencies live in `KEYS` at the top of the scenario file and are displayed only on the station that owns them. Adding a scenario means adding another file with the same shape (`injects`, `decisions`, `debriefs`, `tasks`, `step`, `end`) and pointing `App.js` at it.
+Codes and frequencies live in `KEYS` at the top of the scenario file and are displayed only on the station that owns them. Adding a scenario means adding another file with the same shape (`preflight`, `injects`, `decisions`, `readbacks`, `debriefs`, `tasks`, `step`, `end`) and pointing `App.js` at it.
 
 ---
 

@@ -122,6 +122,28 @@ export class StationBase {
     this.alarmLight.group.position.set(-0.065, 0, 0.004);
     this.addIndicator(this.alarmLight, ackMount);
 
+    // ENGAGE lives on every console; visible only during pre-flight. The
+    // Captain's copy arms once all four station codes verify; the crew tap
+    // theirs on the Captain's spoken "3, 2, 1, ENGAGE".
+    this.engageButton = new PushButton({
+      width: 0.09, height: 0.036, depth: 0.018, color: 0x3a1418, glow: 0xff4c5b, label: 'ENGAGE', labelSize: 0.013,
+      name: `${this.role}-engage`,
+      onPress: () => {
+        if (!this.canEngage()) {
+          sfx.error();
+          this._engageDenied = 2.5;
+          this.status.invalidate();
+          return;
+        }
+        sfx.engage();
+        bus.emit('station:engage', { role: this.role });
+      },
+    });
+    this.engageButton.root.position.set(0, 0.068, 0);
+    this.engageButton.root.visible = false;
+    this.addControl(this.engageButton, ackMount);
+    this.engageButton.setEnabled(false);
+
     // Live CONFIG CODE readout: encodes this station's current configuration
     // so the operator can read it to the Captain for verification.
     if (SCHEMAS[this.role]) {
@@ -138,6 +160,22 @@ export class StationBase {
       });
       this.addScreen(this.codeScreen, ackMount);
     }
+  }
+
+  /** Override on stations that must gate ENGAGE (Captain: all codes verified). */
+  canEngage() {
+    return true;
+  }
+
+  get inPreflight() {
+    return !!this.engine?.preflight;
+  }
+
+  setPreflight(on) {
+    this.engageButton.root.visible = on;
+    this.engageButton.setEnabled(on && this.canEngage());
+    this._engageDenied = 0;
+    this.status.invalidate();
   }
 
   _refreshReadbackCode() {
@@ -203,7 +241,8 @@ export class StationBase {
     const color = this.locked ? PALETTE.red : this.tintHex();
     p.header(`${this.meta.label} · ${this.meta.sub}`, color);
     const t = this.engine?.timer.t ?? 0;
-    p.text(`T+${TimerManager.format(t)}`, w - 14, 10, { size: 22, align: 'right', color: PALETTE.white, weight: 'bold' });
+    const pre = this.inPreflight;
+    p.text(pre ? 'PRE-FLIGHT' : `T+${TimerManager.format(t)}`, w - 14, 10, { size: pre ? 18 : 22, align: 'right', color: pre ? PALETTE.amber : PALETTE.white, weight: 'bold' });
 
     if (this.locked) {
       ctx.fillStyle = 'rgba(255,60,80,0.18)';
@@ -231,10 +270,21 @@ export class StationBase {
     for (const tk of tasks) {
       const col = tk.state === 'success' ? PALETTE.green : tk.state === 'failed' ? PALETTE.red : PALETTE.amber;
       const mark = tk.state === 'success' ? '■' : tk.state === 'failed' ? '✕' : '▶';
-      const remain = tk.state === 'active' ? ` ${Math.max(0, Math.ceil(tk.until - t))}s` : '';
+      const remain = tk.state === 'active' && Number.isFinite(tk.until) ? ` ${Math.max(0, Math.ceil(tk.until - t))}s` : '';
       p.text(`${mark} ${tk.title}${remain}`, 14, y, { size: 17, color: col, weight: tk.state === 'active' ? 'bold' : 'normal' });
       if (tk.state === 'active' && tk.hint) p.text(tk.hint, 34, y + 19, { size: 13, color: PALETTE.screenDim });
       y += tk.state === 'active' ? 40 : 22;
+    }
+    if (pre) {
+      const allSet = tasks.length > 0 && tasks.every((tk) => tk.state === 'success');
+      if (this._engageDenied > 0) {
+        p.text('ENGAGE NOT ARMED — verify all station codes first', 14, y, { size: 13, color: PALETTE.red, weight: 'bold' });
+      } else if (allSet) {
+        p.text(this.role === 'CAPTAIN' ? 'ALL CODES VERIFIED — count "3, 2, 1, ENGAGE"' : 'SET · read CONFIG CODE · ENGAGE on Captain\'s count', 14, y, { size: 13, color: PALETTE.green, weight: 'bold' });
+      } else {
+        p.text('No clock in pre-flight. Configure, then read your CONFIG CODE.', 14, y, { size: 13, color: PALETTE.amber });
+      }
+      y += 20;
     }
 
     y = Math.max(y + 6, h * 0.62);
@@ -243,7 +293,7 @@ export class StationBase {
     const msgs = this.engine?.messages.slice(0, 2) ?? [];
     for (const m of msgs) {
       const col = m.level === 'critical' ? PALETTE.red : m.level === 'warn' ? PALETTE.amber : m.level === 'ok' ? PALETTE.green : PALETTE.screenFg;
-      p.text(`${TimerManager.format(m.t)}  ${m.title}`, 14, y, { size: 15, color: col, weight: 'bold' });
+      p.text(`${m.t < 0 ? 'PRE  ' : TimerManager.format(m.t)}  ${m.title}`, 14, y, { size: 15, color: col, weight: 'bold' });
       wrapText(p, m.message, 14, y + 18, w - 28, 13, PALETTE.white, 2);
       y += 52;
     }
@@ -280,6 +330,17 @@ export class StationBase {
     if (this._codeFlash > 0) {
       this._codeFlash -= dt;
       if (this._codeFlash <= 0) this.codeScreen?.invalidate();
+    }
+    if (this._engageDenied > 0) {
+      this._engageDenied -= dt;
+      if (this._engageDenied <= 0) this.status.invalidate();
+    }
+    if (this.engageButton?.root.visible) {
+      this._engT = (this._engT ?? 0) + dt;
+      const armed = this.canEngage();
+      if (this.engageButton.enabled !== armed) this.engageButton.setEnabled(armed);
+      const pulse = armed ? 0.6 + 0.6 * (0.5 + 0.5 * Math.sin(this._engT * 4)) : 0.15;
+      if (this.engageButton.capMat) this.engageButton.capMat.emissiveIntensity = pulse;
     }
     for (const s of this.screens) s.render();
   }

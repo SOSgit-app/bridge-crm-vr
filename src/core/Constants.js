@@ -33,7 +33,7 @@ export const STATION_SEATS = Object.freeze({
 export const APP_PHASE = Object.freeze({
   ROLE_SELECT: 'ROLE_SELECT',
   CALIBRATE: 'CALIBRATE',
-  STANDBY: 'STANDBY',
+  PREFLIGHT: 'PREFLIGHT', // console live, no clock; ends on ENGAGE
   RUNNING: 'RUNNING',
   COMPLETE: 'COMPLETE',
 });
