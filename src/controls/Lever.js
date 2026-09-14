@@ -104,8 +104,8 @@ export class Lever extends Interactable {
     if (!hit && pointer.hasTip) hit = this._plane.projectPoint(pointer.tip, this._tmp);
     if (!hit) return null;
     const local = this.root.worldToLocal(hit.clone());
-    // arm points +Y at angle 0, rotating about +X: y = cos(a), z = -sin(a)
-    return Math.atan2(-local.z, local.y);
+    // Match Three.js rotation.x: tip at +Y goes toward +Z as angle increases.
+    return Math.atan2(local.z, local.y);
   }
 
   onPressStart(pointer) {

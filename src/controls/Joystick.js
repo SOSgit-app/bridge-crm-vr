@@ -9,7 +9,7 @@ import { makeLabel } from './Label.js';
  * becomes the deflection. Springs back to centre on release.
  */
 export class Joystick extends Interactable {
-  constructor({ height = 0.14, maxTilt = 0.45, spring = true, label = '', deadzone = 0.05, name = 'joystick', color = 0x1d232d } = {}) {
+  constructor({ height = 0.14, maxTilt = 0.45, spring = true, label = '', deadzone = 0.12, name = 'joystick', color = 0x1d232d, response = 1.55 } = {}) {
     const group = new THREE.Group();
     group.name = name;
     super(group);
@@ -18,9 +18,11 @@ export class Joystick extends Interactable {
     this.maxTilt = maxTilt;
     this.spring = spring;
     this.deadzone = deadzone;
+    this.response = response;
     this._plane = new THREE.Plane();
     this._tmp = new THREE.Vector3();
     this._grabOffset = new THREE.Vector2();
+    this._smoothed = new THREE.Vector2(0, 0);
 
     const base = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.065, 0.02, 32), MAT.brushed);
     base.position.y = 0.01;
@@ -70,8 +72,10 @@ export class Joystick extends Interactable {
     if (!hit && pointer.hasTip) hit = this._plane.projectPoint(pointer.tip, this._tmp);
     if (!hit) return null;
     const local = this.root.worldToLocal(hit.clone());
-    // x: right, -z: forward (push forward = pitch down = negative y)
-    return new THREE.Vector2(local.x / 0.09, -local.z / 0.09);
+    // Push grip toward console (-Z) → negative Y (nose-down / forward).
+    // Drag right (+X) → positive X. Keep the same sign as the hand so the
+    // stick visually follows the pointer instead of opposing it.
+    return new THREE.Vector2(local.x / 0.11, local.z / 0.11);
   }
 
   onHoverStart() {
@@ -99,19 +103,24 @@ export class Joystick extends Interactable {
     this.gripMat.emissiveIntensity = this.hovered ? 0.25 : 0;
   }
 
-  /** Axes with deadzone applied. */
+  /** Axes with deadzone + soft response curve applied. */
   getAxes() {
-    const v = this.axes.clone();
-    if (v.length() < this.deadzone) v.set(0, 0);
-    return v;
+    const v = this._smoothed.clone();
+    const len = v.length();
+    if (len < this.deadzone) return v.set(0, 0);
+    const t = THREE.MathUtils.clamp((len - this.deadzone) / (1 - this.deadzone), 0, 1);
+    const shaped = Math.pow(t, this.response);
+    return v.multiplyScalar(shaped / len);
   }
 
   update(dt) {
     if (!this.pressedBy && this.spring) {
-      this.axes.lerp(new THREE.Vector2(0, 0), Math.min(1, dt * 10));
+      this.axes.lerp(new THREE.Vector2(0, 0), Math.min(1, dt * 6));
     }
-    // pitch: pushing forward (axes.y negative) tilts shaft forward (rotation.x negative)
-    this.gimbal.rotation.x = this.axes.y * this.maxTilt;
-    this.gimbal.rotation.z = -this.axes.x * this.maxTilt;
+    // Low-pass the stick so tiny hand jitter doesn't flick the ship.
+    this._smoothed.lerp(this.axes, Math.min(1, dt * 8));
+    // Visual follows hand: negative Y (push forward) → negative rotation.x → tip toward -Z.
+    this.gimbal.rotation.x = this._smoothed.y * this.maxTilt;
+    this.gimbal.rotation.z = -this._smoothed.x * this.maxTilt;
   }
 }

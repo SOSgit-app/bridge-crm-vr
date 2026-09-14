@@ -120,16 +120,19 @@ export class ShipState {
 
   /** Helm attitude integration from joystick axes. */
   steer(dt, { pitchYaw, rollThrust }) {
-    const yawRate = 38; // deg/s at full deflection
-    const pitchRate = 28;
-    const rollRate = 45;
+    // Soft rates — full stick is still usable, but mid deflections are gentle.
+    const yawRate = 16; // deg/s at full deflection
+    const pitchRate = 12;
+    const rollRate = 20;
     const thrustOk = this.power.THRUSTERS && this.breakers.THRUSTERS && this.breakers.MAIN;
     const k = thrustOk ? 1 : 0.25;
     this.attitude.bearing = ((this.attitude.bearing + pitchYaw.x * yawRate * k * dt) % 360 + 360) % 360;
-    this.attitude.pitch = Math.max(-60, Math.min(60, this.attitude.pitch - pitchYaw.y * pitchRate * k * dt));
+    // Push stick forward (axes.y < 0) → nose down (pitch decreases).
+    this.attitude.pitch = Math.max(-60, Math.min(60, this.attitude.pitch + pitchYaw.y * pitchRate * k * dt));
     this.attitude.roll = Math.max(-90, Math.min(90, this.attitude.roll + rollThrust.x * rollRate * k * dt));
     // Roll self-centres slowly when the stick is released
     if (Math.abs(rollThrust.x) < 0.05) this.attitude.roll *= Math.max(0, 1 - dt * 1.2);
-    if (Math.abs(rollThrust.y) > 0.05) this.throttle = Math.max(0, Math.min(1, this.throttle - rollThrust.y * 0.4 * dt));
+    // Push right stick forward → slight throttle increase; pull → decrease.
+    if (Math.abs(rollThrust.y) > 0.05) this.throttle = Math.max(0, Math.min(1, this.throttle - rollThrust.y * 0.18 * dt));
   }
 }
