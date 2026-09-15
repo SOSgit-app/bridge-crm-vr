@@ -150,6 +150,21 @@ export class XRRig {
     return out;
   }
 
+  /**
+   * World-space orientation of the named controller, or null if not tracked.
+   * Used for grip-relative tilt flight on Helm.
+   */
+  getControllerWorldQuat(handedness, out = new THREE.Quaternion()) {
+    if (!this.inXR) return null;
+    for (const c of this.controllers) {
+      if (c.userData.handedness !== handedness) continue;
+      if (!c.userData.inputSource) return null;
+      c.getWorldQuaternion(out);
+      return out;
+    }
+    return null;
+  }
+
   /** Short rumble on a handed controller (left / right). */
   pulseHand(handedness, intensity = 0.4, ms = 30) {
     for (const c of this.controllers) {

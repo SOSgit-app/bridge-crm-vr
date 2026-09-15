@@ -128,7 +128,7 @@ Each headset runs its own `ShipState` and only sees its own console. Three mecha
 | Station | Physical controls | Exclusive telemetry | Verified values |
 |---|---|---|---|
 | **Command** | Holo-Table decision / debrief hex nodes, base-32 readback keypad, ACK | Theater map, global hull & shields, component status, Situation / Intent / Directives, **command keys**, readback verification | All 4 pre-flight codes verified; route chosen in window; tasked stations verified |
-| **Helm** | Left stick (pitch/yaw), right stick (roll/trim), throttle lever. **In VR:** squeeze grip to arm that hand, then fly with the Quest thumbstick — console sticks follow. Trigger still grabs the diegetic sticks / throttle. | Bearing tape, pitch ladder, roll, target reticle, debris/collision lights, grip-arm status | `ship.attitude` vs ordered vector (±4–5°) |
+| **Helm** | Left stick (pitch/yaw), right stick (roll/trim), throttle lever. **In VR:** squeeze grip to arm that hand, then fly with the Quest thumbstick **or** by tilting the controller (zeroed at grip). Console sticks follow. Trigger still grabs diegetic sticks / throttle. | Bearing tape, pitch ladder, roll, target reticle, debris/collision lights, grip-arm status | `ship.attitude` vs ordered vector (±4–5°) |
 | **Tactical** | Alnum keypad, LASER/TORPEDO dial, ECM dial, 4 shield-arc buttons, ECM JAM, POINT DEFENSE spring handle, TORPEDO LAUNCH latch handle | Target lock reticle, shield arc strengths, INBOUND LOCK, arming lights | `acceptedKeys`, `laserFreq`/`ecmFreq` (±3 MHz), `pdFired`, `launchedAt`, `jamming` |
 | **Science** | WAVE TUNING dial, SENSOR LOCK button, holographic beat display | Spectrum analyzer with raw signal peaks, decoded frequency readout | `lockedFreq` == signal (±3 MHz) |
 | **Engineering** | 2 patch cables × 5 sockets (WEAPONS, THRUSTERS, SHIELDS, SENSORS, AUXILIARY), breakers MAIN/WEAPONS/THRUSTERS/SHIELDS/BOOST, THERMAL VENT lever, COOLANT valve | Reactor thermal gauge & rate, bus voltages, breaker states | `ship.power[bus]`, breakers, `thermal < 100` |
@@ -154,7 +154,7 @@ Keys typed on the keypad accept the full form (`DELTA-9`), spaced (`delta 9`) or
 | PRE | Breaker stability | Engineering | AUX cable → THRUSTERS, reads CONFIG CODE |
 | PRE | Check-off | Captain | types all 4 codes; ENGAGE arms when all verify |
 | 00:00 | **ENGAGE** | all 5 together on the Captain's count | |
-| 00:15 | **Rogue asteroid** | Captain picks BLAST IT (key **ALPHA-1**: Tactical PD + Science lock 215 MHz) or EVADE IT (**VECTOR 180**: Helm turn + Engineering BOOST) | window closes 01:00, else −10% shields |
+| 00:15 | **Rogue asteroid** | Captain picks **BLAST IT** (Helm puts ASTEROID box in reticle; Tactical PD key **ALPHA-1**; Science lock **215 MHz**) or **EVADE IT** (Helm → **VECTOR 180** diamond + Engineering BOOST) | window closes 01:00, else −10% shields |
 | 01:01 | Crew report | Captain | CLEARED / IMPACT (auto-CLEARED if readbacks verified) |
 | 01:15 | **Armed drone lock** | all alerted | |
 | 01:25 | Combat route | Captain: A kinetic **DELTA-9** / B electronic **ECHO-3** / C escape **WARP-7 · VECTOR 270** | |

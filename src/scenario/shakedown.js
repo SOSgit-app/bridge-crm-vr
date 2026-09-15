@@ -10,6 +10,8 @@ export const KEYS = Object.freeze({
   ASTEROID_KEY: 'ALPHA-1',
   ASTEROID_VECTOR: 180,
   ASTEROID_RETURN_FREQ: 215,
+  ASTEROID_BEARING: 10,
+  ASTEROID_PITCH: -5,
   DRONE_ARM_KEY: 'DELTA-9',
   DRONE_ECM_KEY: 'ECHO-3',
   DRONE_WARP_KEY: 'WARP-7',
@@ -95,11 +97,24 @@ export const shakedown = {
       t: 15, id: 'asteroid', title: 'ROGUE ASTEROID — COLLISION COURSE', level: 'critical',
       message: 'Impact in 45 seconds. Await the Captain\'s directive, then read back your CONFIG CODE.',
       action: (ctx) => {
-        ctx.station.setThreat?.({ kind: 'asteroid', bearing: 10, pitch: -5, eta: 45 });
+        ctx.station.setThreat?.({ kind: 'asteroid', bearing: KEYS.ASTEROID_BEARING, pitch: KEYS.ASTEROID_PITCH, eta: 45 });
         ctx.station.setSignal?.({ freq: KEYS.ASTEROID_RETURN_FREQ, label: 'ASTEROID RETURN', width: 5 });
+        // Helm: diamond at bearing 180 so "VECTOR 180" is something to put the nose on
+        // (same idea as the pre-flight CAL MARKER). For BLAST, put the red ASTEROID box in the reticle instead.
+        ctx.station.setMarker?.({ bearing: KEYS.ASTEROID_VECTOR, pitch: 0, label: `VECTOR ${KEYS.ASTEROID_VECTOR}` });
       },
     },
-    { t: 60, id: 'asteroid-window', title: 'ASTEROID EXECUTION WINDOW CLOSED', level: 'warn', message: 'Outcome determined by station actions.', action: (ctx) => ctx.station.clearThreat?.() },
+    {
+      t: 15, id: 'asteroid-helm', to: [HELM], title: 'HELM — NAV MARKERS UP', level: 'warn',
+      message: `Red ASTEROID box = the rock (BLAST → put it in the reticle). Amber VECTOR ${KEYS.ASTEROID_VECTOR} diamond = evade heading (EVADE → nose on the diamond).`,
+    },
+    {
+      t: 60, id: 'asteroid-window', title: 'ASTEROID EXECUTION WINDOW CLOSED', level: 'warn', message: 'Outcome determined by station actions.',
+      action: (ctx) => {
+        ctx.station.clearThreat?.();
+        ctx.station.clearMarker?.();
+      },
+    },
 
     {
       t: 75, id: 'drone-lock', title: 'ARMED DRONE — TARGET LOCK ON US', level: 'critical',
@@ -107,12 +122,24 @@ export const shakedown = {
       action: (ctx) => {
         ctx.station.setThreat?.({ kind: 'drone', bearing: KEYS.DRONE_BEARING, pitch: KEYS.DRONE_PITCH, eta: 60, lock: true });
         ctx.station.setSignal?.({ freq: KEYS.DRONE_SHIELD_FREQ, label: 'DRONE SHIELD MOD', width: 4 });
+        // Escape heading diamond — fly to it only if Cap orders route C.
+        ctx.station.setMarker?.({ bearing: KEYS.DRONE_ESCAPE_VECTOR, pitch: 0, label: `VECTOR ${KEYS.DRONE_ESCAPE_VECTOR}` });
       },
+    },
+    {
+      t: 75, id: 'drone-helm', to: [HELM], title: 'HELM — NAV MARKERS UP', level: 'warn',
+      message: `Red DRONE box = put in reticle for kinetic. Amber VECTOR ${KEYS.DRONE_ESCAPE_VECTOR} diamond = escape heading for route C. Route B → ACK STANDBY.`,
     },
     { t: 85, id: 'drone-route', to: [CAPTAIN], title: 'SELECT COMBAT ROUTE', level: 'warn', message: 'Three routes on the Holo-Table. Choose, then issue directives with the embedded key.' },
     { t: 105, id: 'drone-exec', title: 'EXECUTE', level: 'warn', message: 'Execution window open. Stations: read your CONFIG CODE to the Captain for verification.' },
     { t: 120, id: 'drone-fire', to: [TACTICAL], title: 'FIRE WHEN READY', level: 'critical', message: 'Pull the launch handle once torpedoes are armed and modulated.' },
-    { t: 135, id: 'complete', title: 'MISSION COMPLETE', level: 'ok', message: 'Shakedown cruise concluded. Stand down from stations.' },
+    {
+      t: 135, id: 'complete', title: 'MISSION COMPLETE', level: 'ok', message: 'Shakedown cruise concluded. Stand down from stations.',
+      action: (ctx) => {
+        ctx.station.clearThreat?.();
+        ctx.station.clearMarker?.();
+      },
+    },
   ],
 
   decisions: [
@@ -123,12 +150,22 @@ export const shakedown = {
         {
           id: 'blast', label: 'BLAST IT', style: 'A', code: KEYS.ASTEROID_KEY,
           intent: 'Clear the rock with point-defense.',
-          directives: { TACTICAL: `Unlock point-defense with ${KEYS.ASTEROID_KEY}, pull PD handle`, SCIENCE: `Lock sensors on asteroid return (${KEYS.ASTEROID_RETURN_FREQ} MHz)`, HELM: 'Hold course', ENGINEERING: 'Hold power' },
+          directives: {
+            TACTICAL: `Unlock point-defense with ${KEYS.ASTEROID_KEY}, pull PD handle`,
+            SCIENCE: `Lock sensors on asteroid return (${KEYS.ASTEROID_RETURN_FREQ} MHz)`,
+            HELM: 'Put the ASTEROID box in the reticle and hold it',
+            ENGINEERING: 'Hold power — ACK STANDBY',
+          },
         },
         {
           id: 'evade', label: 'EVADE IT', style: 'C', code: `VECTOR ${KEYS.ASTEROID_VECTOR}`,
           intent: 'Break hard away from the rock.',
-          directives: { HELM: `Come hard to bearing ${KEYS.ASTEROID_VECTOR}`, ENGINEERING: 'Cable to THRUSTERS + BOOST breaker on', TACTICAL: 'Stand by', SCIENCE: 'Stand by' },
+          directives: {
+            HELM: `Put the nose on the VECTOR ${KEYS.ASTEROID_VECTOR} marker (bearing ${KEYS.ASTEROID_VECTOR}) and hold it`,
+            ENGINEERING: 'Cable to THRUSTERS + BOOST breaker on',
+            TACTICAL: 'Stand by',
+            SCIENCE: 'Stand by',
+          },
         },
       ],
     },
@@ -139,17 +176,22 @@ export const shakedown = {
         {
           id: 'kinetic', label: 'A · OFFENSIVE / KINETIC', style: 'A', code: KEYS.DRONE_ARM_KEY,
           intent: 'Kill the drone with a modulated torpedo.',
-          directives: { TACTICAL: `Unlock torpedoes with ${KEYS.DRONE_ARM_KEY}, match modulation to Science, pull launch`, SCIENCE: 'Get me their shield frequency', ENGINEERING: 'Weapons maximum power', HELM: 'Put the drone in the reticle' },
+          directives: { TACTICAL: `Unlock torpedoes with ${KEYS.DRONE_ARM_KEY}, match modulation to Science, pull launch`, SCIENCE: 'Get me their shield frequency', ENGINEERING: 'Weapons maximum power', HELM: 'Put the DRONE box in the reticle' },
         },
         {
           id: 'ewar', label: 'B · ELECTRONIC / STEALTH', style: 'B', code: KEYS.DRONE_ECM_KEY,
           intent: 'Jam the lock and slip away.',
-          directives: { SCIENCE: 'Get me their shield frequency', TACTICAL: `ECM protocol ${KEYS.DRONE_ECM_KEY}, jam on their frequency`, ENGINEERING: 'Power to SENSORS', HELM: 'Hold steady' },
+          directives: { SCIENCE: 'Get me their shield frequency', TACTICAL: `ECM protocol ${KEYS.DRONE_ECM_KEY}, jam on their frequency`, ENGINEERING: 'Power to SENSORS', HELM: 'Hold steady — ACK STANDBY' },
         },
         {
           id: 'escape', label: 'C · EVASIVE / ESCAPE', style: 'C', code: `${KEYS.DRONE_WARP_KEY} · VECTOR ${KEYS.DRONE_ESCAPE_VECTOR}`,
           intent: 'Warp out before the strike.',
-          directives: { HELM: `Vector ${KEYS.DRONE_ESCAPE_VECTOR}, full throttle`, ENGINEERING: 'Cable to THRUSTERS, BOOST on', TACTICAL: `Warp override ${KEYS.DRONE_WARP_KEY}`, SCIENCE: 'Stand by' },
+          directives: {
+            HELM: `Put the nose on the VECTOR ${KEYS.DRONE_ESCAPE_VECTOR} marker, full throttle`,
+            ENGINEERING: 'Cable to THRUSTERS, BOOST on',
+            TACTICAL: `Warp override ${KEYS.DRONE_WARP_KEY}`,
+            SCIENCE: 'Stand by',
+          },
         },
       ],
     },
@@ -171,13 +213,16 @@ export const shakedown = {
               pdFired: { equals: true, hint: 'Pull the POINT DEFENSE handle after the key is accepted.' },
             },
             [SCIENCE]: { lockedFreq: { value: KEYS.ASTEROID_RETURN_FREQ, tol: 3, hint: `Tune to the asteroid return (${KEYS.ASTEROID_RETURN_FREQ} MHz) and press SENSOR LOCK.` } },
-            [HELM]: { standby: true },
+            [HELM]: {
+              bearing: { value: KEYS.ASTEROID_BEARING, tol: 5, wrap: true, hint: `Put the ASTEROID box in the reticle — bearing ${String(KEYS.ASTEROID_BEARING).padStart(3, '0')}.` },
+              pitch: { value: KEYS.ASTEROID_PITCH, tol: 5, hint: `Pitch to ${KEYS.ASTEROID_PITCH}° so the rock sits in the reticle.` },
+            },
             [ENGINEERING]: { standby: true },
           };
         }
         if (c.choices.asteroid === 'evade') {
           return {
-            [HELM]: { bearing: { value: KEYS.ASTEROID_VECTOR, tol: 5, wrap: true, hint: `Come around to bearing ${KEYS.ASTEROID_VECTOR} and hold it.` } },
+            [HELM]: { bearing: { value: KEYS.ASTEROID_VECTOR, tol: 5, wrap: true, hint: `Put the nose on the VECTOR ${KEYS.ASTEROID_VECTOR} marker (amber diamond) and hold it.` } },
             [ENGINEERING]: {
               power: { includes: ['THRUSTERS'], hint: 'Patch cable into the THRUSTERS socket.' },
               breakers: { includes: ['MAIN', 'BOOST'], hint: 'Close the BOOST breaker (and MAIN must be up).' },
@@ -229,7 +274,7 @@ export const shakedown = {
         if (c.choices.drone === 'escape') {
           return {
             [HELM]: {
-              bearing: { value: KEYS.DRONE_ESCAPE_VECTOR, tol: 5, wrap: true, hint: `Escape vector — bearing ${KEYS.DRONE_ESCAPE_VECTOR}.` },
+              bearing: { value: KEYS.DRONE_ESCAPE_VECTOR, tol: 5, wrap: true, hint: `Put the nose on the VECTOR ${KEYS.DRONE_ESCAPE_VECTOR} marker.` },
               throttle: { value: 1, tol: 0.1, hint: 'Throttle to the stop — full power.' },
             },
             [ENGINEERING]: {
@@ -270,7 +315,9 @@ export const shakedown = {
       check: (c) => c.values.acceptedKeys?.has(KEYS.ASTEROID_KEY) && c.values.pdFired === true },
     { id: 'sci-asteroid', role: SCIENCE, from: 15, until: 60, title: 'SENSOR LOCK ON ASTEROID', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'Lock asteroid return, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'blast' }, allowStandby: true, penalty: asteroidPenalty,
       check: (c) => c.values.lockedFreq != null && verifyDial(c.values.lockedFreq, KEYS.ASTEROID_RETURN_FREQ, 3) },
-    { id: 'helm-evade', role: HELM, from: 15, until: 60, title: 'HARD TURN TO VECTOR 180', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'Turn to ordered vector, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'evade' }, allowStandby: true, penalty: asteroidPenalty,
+    { id: 'helm-blast', role: HELM, from: 15, until: 60, title: 'ASTEROID IN RETICLE', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'BLAST → red box in reticle · EVADE → VECTOR 180 diamond', branch: { decisionId: 'asteroid', optionId: 'blast' }, allowStandby: true, penalty: asteroidPenalty,
+      check: (c) => verifyVector(c.ship.attitude, { bearing: KEYS.ASTEROID_BEARING, pitch: KEYS.ASTEROID_PITCH }, { bearingTol: 5, pitchTol: 5 }) },
+    { id: 'helm-evade', role: HELM, from: 15, until: 60, title: 'NOSE ON VECTOR 180 MARKER', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'BLAST → red box in reticle · EVADE → VECTOR 180 diamond', branch: { decisionId: 'asteroid', optionId: 'evade' }, allowStandby: true, penalty: asteroidPenalty,
       check: (c) => verifyHeading(c.ship.attitude.bearing, KEYS.ASTEROID_VECTOR, 5) },
     { id: 'eng-boost', role: ENGINEERING, from: 15, until: 60, title: 'BOOST THRUSTERS', groupTitle: 'ASTEROID — AWAIT DIRECTIVE', groupHint: 'Thrusters powered + BOOST, or ACK STANDBY', branch: { decisionId: 'asteroid', optionId: 'evade' }, allowStandby: true, penalty: asteroidPenalty,
       check: (c) => c.ship.power.THRUSTERS && c.ship.breakers.BOOST && c.ship.breakers.MAIN },
@@ -295,9 +342,9 @@ export const shakedown = {
       check: (c) => c.ship.power.SENSORS && c.ship.breakers.MAIN },
     { id: 'eng-warp', role: ENGINEERING, from: 85, until: 130, title: 'THRUSTERS + BOOST FOR WARP', branch: { decisionId: 'drone', optionId: 'escape' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => c.ship.power.THRUSTERS && c.ship.breakers.BOOST && c.ship.breakers.MAIN },
-    { id: 'helm-reticle', role: HELM, from: 85, until: 130, title: 'DRONE IN RETICLE', groupTitle: 'DRONE — AWAIT DIRECTIVE', groupHint: 'Put the target in the reticle or fly the ordered vector', branch: { decisionId: 'drone', optionId: 'kinetic' }, allowStandby: true, penalty: dronePenalty,
+    { id: 'helm-reticle', role: HELM, from: 85, until: 130, title: 'DRONE IN RETICLE', groupTitle: 'DRONE — AWAIT DIRECTIVE', groupHint: 'Put DRONE box in reticle, or fly VECTOR 270 diamond if ordered to escape', branch: { decisionId: 'drone', optionId: 'kinetic' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => verifyVector(c.ship.attitude, { bearing: KEYS.DRONE_BEARING, pitch: KEYS.DRONE_PITCH }, { bearingTol: 5, pitchTol: 5 }) },
-    { id: 'helm-escape', role: HELM, from: 85, until: 130, title: 'ESCAPE VECTOR 270 FULL THROTTLE', branch: { decisionId: 'drone', optionId: 'escape' }, allowStandby: true, penalty: dronePenalty,
+    { id: 'helm-escape', role: HELM, from: 85, until: 130, title: 'NOSE ON VECTOR 270 · FULL THROTTLE', branch: { decisionId: 'drone', optionId: 'escape' }, allowStandby: true, penalty: dronePenalty,
       check: (c) => verifyHeading(c.ship.attitude.bearing, KEYS.DRONE_ESCAPE_VECTOR, 5) && c.ship.throttle > 0.9 },
     { id: 'cap-drone', role: CAPTAIN, from: 85, until: 120, title: 'SELECT COMBAT ROUTE', hint: 'Choose A / B / C and issue directives', check: (c) => !!c.choices.drone },
     { id: 'cap-readback-drone', role: CAPTAIN, from: 85, until: 130, title: 'VERIFY COMBAT READBACKS', hint: 'Collect CONFIG CODES before FIRE / EXECUTE', check: (c) => c.readback.allVerified('drone', c) },

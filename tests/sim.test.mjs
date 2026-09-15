@@ -332,8 +332,18 @@ test('Scenario: Captain verifies crew readbacks against the chosen route; auto-c
   assert.match(r1.hints[0].hint, /POINT DEFENSE/);
   assert.equal(engine.readback.roleStatus('asteroid', ROLES.TACTICAL).state, 'correction');
 
-  // Helm has nothing to do on BLAST: standby
-  assert.equal(engine.submitReadback(encodeReadback(ROLES.HELM, {}, crewShip)).state, 'standby');
+  // Helm must put the asteroid in the reticle for BLAST
+  crewShip.attitude.bearing = 0;
+  crewShip.attitude.pitch = 0;
+  const helmBad = engine.submitReadback(encodeReadback(ROLES.HELM, {}, crewShip));
+  assert.equal(helmBad.state, 'correction');
+  assert.match(helmBad.hints[0].hint, /ASTEROID|reticle|bearing/i);
+  crewShip.attitude.bearing = KEYS.ASTEROID_BEARING;
+  crewShip.attitude.pitch = KEYS.ASTEROID_PITCH;
+  assert.equal(engine.submitReadback(encodeReadback(ROLES.HELM, {}, crewShip)).state, 'verified');
+
+  // Engineering has nothing to do on BLAST: standby
+  assert.equal(engine.submitReadback(encodeReadback(ROLES.ENGINEERING, {}, crewShip)).state, 'standby');
 
   // Corrected Tactical + Science lock → all verified → Captain task passes
   assert.equal(engine.submitReadback(tacGood).state, 'verified');

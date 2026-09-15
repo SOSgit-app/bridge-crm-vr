@@ -14,15 +14,23 @@ const PANEL = { center: new THREE.Vector3(0, 1.08, -1.05), rotX: -0.42 };
  * Helm / Flight Operations. Dual sticks (left: pitch/yaw, right: roll/thrust
  * trim), a throttle lever and a spatial flight HUD.
  *
- * In XR the Quest thumbsticks drive flight while the matching grip is held
- * (grip-to-arm). Console sticks follow the pad visually. Diegetic grab still
- * works for desktop and as a fallback when grips are released.
+ * In XR: squeeze grip to arm that hand. While armed you can fly with either
+ * the Quest thumbstick OR by tilting the physical controller (relative to the
+ * pose at the moment you gripped). Console sticks follow visually. Diegetic
+ * grab still works on desktop and when grips are released.
  */
 export class HelmStation extends StationBase {
   build() {
     this.values.marker = null;
     this.values.threat = null;
     this._gripArmed = { left: false, right: false };
+    // World quat captured when grip arms — tilt is measured from this zero.
+    this._poseZero = { left: null, right: null };
+    this._tmpQ = new THREE.Quaternion();
+    this._tmpInv = new THREE.Quaternion();
+    this._tmpE = new THREE.Euler();
+    this._padAxes = new THREE.Vector2();
+    this._poseAxes = new THREE.Vector2();
 
     // Sticks on the desk
     this.leftStick = this.addControl(new Joystick({ label: 'PITCH / YAW', name: 'stick-L' }));
@@ -72,7 +80,14 @@ export class HelmStation extends StationBase {
 
   setMarker(m) {
     this.values.marker = m;
-    this.space.setMarker('helm-marker', { bearing: m.bearing, pitch: m.pitch, kind: 'marker', distance: 70, color: 0x5ad0ff });
+    const color = m.color ?? (m.label?.startsWith('VECTOR') ? 0xffb347 : 0x5ad0ff);
+    this.space.setMarker('helm-marker', { bearing: m.bearing, pitch: m.pitch ?? 0, kind: 'marker', distance: m.distance ?? 70, color });
+    this.hud.invalidate();
+  }
+
+  clearMarker() {
+    this.values.marker = null;
+    this.space.removeMarker('helm-marker');
     this.hud.invalidate();
   }
 
@@ -82,6 +97,7 @@ export class HelmStation extends StationBase {
     if (t.kind === 'asteroid') m.userData.approach = 130 / t.eta;
     this.warnLights[0].set('amber', true);
     if (t.kind === 'asteroid') this.warnLights[1].set('red', true);
+    this.hud.invalidate();
   }
 
   clearThreat() {
@@ -89,15 +105,20 @@ export class HelmStation extends StationBase {
     this.space.removeMarker('threat');
     this.warnLights[0].set('off');
     this.warnLights[1].set('off');
+    this.hud.invalidate();
   }
 
   onTaskSuccess(task) {
-    if (task.id === 'helm-marker') this.space.removeMarker('helm-marker');
+    const id = task.matched?.id ?? task.id;
+    // Pre-flight cal marker, or a vector marker once the nose is on it.
+    if (id === 'pre-helm-marker' || id === 'helm-blast' || id === 'helm-evade' || id === 'helm-escape' || id === 'helm-marker') {
+      this.clearMarker();
+    }
   }
 
   /**
-   * Resolve pitch/yaw and roll/trim from Quest pads (grip-armed) or diegetic
-   * sticks. Console meshes always follow the active source.
+   * Resolve pitch/yaw and roll/trim from Quest pads + controller tilt
+   * (grip-armed) or diegetic sticks. Console meshes always follow the active source.
    */
   _flightAxes() {
     const xr = this.interaction.xr;
@@ -108,13 +129,23 @@ export class HelmStation extends StationBase {
     if (pads) {
       for (const hand of ['left', 'right']) {
         const g = pads[hand].grip;
-        if (g && !this._gripArmed[hand]) xr.pulseHand(hand, 0.45, 35);
-        if (!g && this._gripArmed[hand]) xr.pulseHand(hand, 0.2, 20);
+        if (g && !this._gripArmed[hand]) {
+          xr.pulseHand(hand, 0.45, 35);
+          // Zero the tilt reference at the pose you're holding when you grip.
+          const q = xr.getControllerWorldQuat(hand, this._tmpQ);
+          this._poseZero[hand] = q ? q.clone() : null;
+        }
+        if (!g && this._gripArmed[hand]) {
+          xr.pulseHand(hand, 0.2, 20);
+          this._poseZero[hand] = null;
+        }
         this._gripArmed[hand] = g;
       }
 
       if (pads.left.grip) {
-        shapePad(pads.left, pitchYaw);
+        shapePad(pads.left, this._padAxes);
+        poseFromTilt(xr, 'left', this._poseZero.left, this._tmpQ, this._tmpInv, this._tmpE, this._poseAxes);
+        combineFlight(this._padAxes, this._poseAxes, pitchYaw);
         this.leftStick.setAxes(pitchYaw.x, pitchYaw.y, { immediate: true });
         this.leftStick.gripMat.emissiveIntensity = 0.55;
       } else {
@@ -123,7 +154,9 @@ export class HelmStation extends StationBase {
       }
 
       if (pads.right.grip) {
-        shapePad(pads.right, rollThrust);
+        shapePad(pads.right, this._padAxes);
+        poseFromTilt(xr, 'right', this._poseZero.right, this._tmpQ, this._tmpInv, this._tmpE, this._poseAxes);
+        combineFlight(this._padAxes, this._poseAxes, rollThrust);
         this.rightStick.setAxes(rollThrust.x, rollThrust.y, { immediate: true });
         this.rightStick.gripMat.emissiveIntensity = 0.55;
       } else {
@@ -132,6 +165,7 @@ export class HelmStation extends StationBase {
       }
     } else {
       this._gripArmed.left = this._gripArmed.right = false;
+      this._poseZero.left = this._poseZero.right = null;
       pitchYaw.copy(this.leftStick.getAxes());
       rollThrust.copy(this.rightStick.getAxes());
     }
@@ -168,8 +202,8 @@ export class HelmStation extends StationBase {
     if (inXR) {
       const l = this._gripArmed.left;
       const r = this._gripArmed.right;
-      p.text(l ? 'L GRIP · FLY' : 'L GRIP TO ARM', 14, 48, { size: 13, color: l ? PALETTE.green : PALETTE.screenDim, weight: l ? 'bold' : 'normal' });
-      p.text(r ? 'R GRIP · FLY' : 'R GRIP TO ARM', w - 14, 48, { size: 13, align: 'right', color: r ? PALETTE.green : PALETTE.screenDim, weight: r ? 'bold' : 'normal' });
+      p.text(l ? 'L GRIP · TILT / STICK' : 'L GRIP TO ARM', 14, 48, { size: 12, color: l ? PALETTE.green : PALETTE.screenDim, weight: l ? 'bold' : 'normal' });
+      p.text(r ? 'R GRIP · TILT / STICK' : 'R GRIP TO ARM', w - 14, 48, { size: 12, align: 'right', color: r ? PALETTE.green : PALETTE.screenDim, weight: r ? 'bold' : 'normal' });
     }
 
     // Bearing tape
@@ -252,7 +286,7 @@ export class HelmStation extends StationBase {
       if (inArc) p.text('ALIGNED', x, y - 34, { size: 13, align: 'center', color: PALETTE.green, weight: 'bold' });
       if (Math.abs(db) > 50 || Math.abs(dp) > 28) p.text(`${db > 0 ? '→' : '←'} ${Math.abs(Math.round(db))}° ${dp > 0 ? '↑' : '↓'} ${Math.abs(Math.round(dp))}°`, x, y + 36, { size: 12, align: 'center', color });
     };
-    if (this.values.marker) drawSym(this.values.marker, PALETTE.screenFg, `${this.values.marker.label}  X:${String(this.values.marker.bearing).padStart(3, '0')} Y:${String(this.values.marker.pitch).padStart(3, '0')}`, 'diamond');
+    if (this.values.marker) drawSym(this.values.marker, this.values.marker.label?.startsWith('VECTOR') ? PALETTE.amber : PALETTE.screenFg, `${this.values.marker.label}  X:${String(Math.round(this.values.marker.bearing)).padStart(3, '0')} Y:${String(Math.round(this.values.marker.pitch ?? 0)).padStart(3, '0')}`, 'diamond');
     if (this.values.threat) drawSym(this.values.threat, PALETTE.red, this.values.threat.kind.toUpperCase() + (this.values.threat.lock ? ' · LOCKED ON US' : ''), 'box');
 
     // Readouts
@@ -274,6 +308,37 @@ function shapePad(pad, out = new THREE.Vector2()) {
   if (len < dead) return out.set(0, 0);
   const t = THREE.MathUtils.clamp((len - dead) / (1 - dead), 0, 1);
   return out.multiplyScalar(Math.pow(t, response) / len);
+}
+
+/**
+ * Controller tilt relative to the grip-zero pose → stick axes.
+ * Tip forward → negative Y (nose down), tip right → positive X — matches the
+ * diegetic sticks. ~28° of tilt is full deflection.
+ */
+const POSE_FULL = THREE.MathUtils.degToRad(28);
+
+function poseFromTilt(xr, hand, zero, tmpQ, tmpInv, tmpE, out) {
+  out.set(0, 0);
+  if (!zero) return out;
+  if (!xr.getControllerWorldQuat(hand, tmpQ)) return out;
+  // delta = zero^{-1} * current (tmpQ holds current, then becomes delta)
+  tmpInv.copy(zero).invert();
+  tmpQ.premultiply(tmpInv);
+  tmpE.setFromQuaternion(tmpQ, 'YXZ');
+  const x = THREE.MathUtils.clamp(tmpE.y / POSE_FULL, -1, 1);
+  const y = THREE.MathUtils.clamp(-tmpE.x / POSE_FULL, -1, 1);
+  out.set(x, y);
+  const len = out.length();
+  if (len < 0.08) return out.set(0, 0);
+  if (len > 1) out.multiplyScalar(1 / len);
+  return out;
+}
+
+/** Per-axis: use whichever input (thumbstick or tilt) is stronger. */
+function combineFlight(pad, pose, out) {
+  out.x = Math.abs(pad.x) >= Math.abs(pose.x) ? pad.x : pose.x;
+  out.y = Math.abs(pad.y) >= Math.abs(pose.y) ? pad.y : pose.y;
+  return out;
 }
 
 function labelPlate(text) {
