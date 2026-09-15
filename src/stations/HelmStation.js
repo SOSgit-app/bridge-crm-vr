@@ -325,8 +325,9 @@ function poseFromTilt(xr, hand, zero, tmpQ, tmpInv, tmpE, out) {
   tmpInv.copy(zero).invert();
   tmpQ.premultiply(tmpInv);
   tmpE.setFromQuaternion(tmpQ, 'YXZ');
-  const x = THREE.MathUtils.clamp(tmpE.y / POSE_FULL, -1, 1);
-  const y = THREE.MathUtils.clamp(-tmpE.x / POSE_FULL, -1, 1);
+  // Tip controller toward you / left → same as pull stick back / left.
+  const x = THREE.MathUtils.clamp(-tmpE.y / POSE_FULL, -1, 1);
+  const y = THREE.MathUtils.clamp(tmpE.x / POSE_FULL, -1, 1);
   out.set(x, y);
   const len = out.length();
   if (len < 0.08) return out.set(0, 0);
