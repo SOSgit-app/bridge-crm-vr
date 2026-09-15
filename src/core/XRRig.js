@@ -118,6 +118,46 @@ export class XRRig {
     return edge;
   }
 
+  /**
+   * Per-hand Quest / xr-standard flight pad sample.
+   * Thumbstick is axes[2]/[3]; grip is buttons[1]; trigger value is buttons[0].
+   * Hands that haven't reported yet are left at zero / unarmed.
+   */
+  pollFlightPads() {
+    const out = {
+      left: { x: 0, y: 0, grip: false, trigger: 0 },
+      right: { x: 0, y: 0, grip: false, trigger: 0 },
+    };
+    if (!this.inXR) return out;
+    for (const c of this.controllers) {
+      const hand = c.userData.handedness;
+      if (hand !== 'left' && hand !== 'right') continue;
+      const pad = c.userData.inputSource?.gamepad;
+      if (!pad) continue;
+      const slot = out[hand];
+      const ax = pad.axes;
+      // xr-standard: [0,1] touchpad, [2,3] thumbstick. Quest uses the latter.
+      if (ax.length >= 4) {
+        slot.x = ax[2] || 0;
+        slot.y = ax[3] || 0;
+      } else {
+        slot.x = ax[0] || 0;
+        slot.y = ax[1] || 0;
+      }
+      slot.grip = !!pad.buttons?.[1]?.pressed;
+      slot.trigger = pad.buttons?.[0]?.value ?? 0;
+    }
+    return out;
+  }
+
+  /** Short rumble on a handed controller (left / right). */
+  pulseHand(handedness, intensity = 0.4, ms = 30) {
+    for (const c of this.controllers) {
+      if (c.userData.handedness !== handedness) continue;
+      c.userData.inputSource?.gamepad?.hapticActuators?.[0]?.pulse?.(intensity, ms);
+    }
+  }
+
   /** Head pose in world space (works both in XR and on desktop). */
   getHeadPose(outPos = new THREE.Vector3(), outQuat = new THREE.Quaternion()) {
     const cam = this.inXR ? this.renderer.xr.getCamera() : this.camera;

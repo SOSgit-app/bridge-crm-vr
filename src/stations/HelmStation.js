@@ -11,15 +11,18 @@ import { headingError } from '../sim/Verification.js';
 const PANEL = { center: new THREE.Vector3(0, 1.08, -1.05), rotX: -0.42 };
 
 /**
- * Helm / Flight Operations. Dual 6-DOF sticks (left: pitch/yaw, right:
- * roll/thrust trim), a throttle lever and a spatial flight HUD. The stick
- * inputs integrate into the local ShipState attitude, which counter-rotates
- * the universe seen through the viewport.
+ * Helm / Flight Operations. Dual sticks (left: pitch/yaw, right: roll/thrust
+ * trim), a throttle lever and a spatial flight HUD.
+ *
+ * In XR the Quest thumbsticks drive flight while the matching grip is held
+ * (grip-to-arm). Console sticks follow the pad visually. Diegetic grab still
+ * works for desktop and as a fallback when grips are released.
  */
 export class HelmStation extends StationBase {
   build() {
     this.values.marker = null;
     this.values.threat = null;
+    this._gripArmed = { left: false, right: false };
 
     // Sticks on the desk
     this.leftStick = this.addControl(new Joystick({ label: 'PITCH / YAW', name: 'stick-L' }));
@@ -92,10 +95,55 @@ export class HelmStation extends StationBase {
     if (task.id === 'helm-marker') this.space.removeMarker('helm-marker');
   }
 
+  /**
+   * Resolve pitch/yaw and roll/trim from Quest pads (grip-armed) or diegetic
+   * sticks. Console meshes always follow the active source.
+   */
+  _flightAxes() {
+    const xr = this.interaction.xr;
+    const pads = xr.inXR ? xr.pollFlightPads() : null;
+    const pitchYaw = new THREE.Vector2();
+    const rollThrust = new THREE.Vector2();
+
+    if (pads) {
+      for (const hand of ['left', 'right']) {
+        const g = pads[hand].grip;
+        if (g && !this._gripArmed[hand]) xr.pulseHand(hand, 0.45, 35);
+        if (!g && this._gripArmed[hand]) xr.pulseHand(hand, 0.2, 20);
+        this._gripArmed[hand] = g;
+      }
+
+      if (pads.left.grip) {
+        shapePad(pads.left, pitchYaw);
+        this.leftStick.setAxes(pitchYaw.x, pitchYaw.y, { immediate: true });
+        this.leftStick.gripMat.emissiveIntensity = 0.55;
+      } else {
+        pitchYaw.copy(this.leftStick.getAxes());
+        if (!this.leftStick.pressedBy && !this.leftStick.hovered) this.leftStick.gripMat.emissiveIntensity = 0;
+      }
+
+      if (pads.right.grip) {
+        shapePad(pads.right, rollThrust);
+        this.rightStick.setAxes(rollThrust.x, rollThrust.y, { immediate: true });
+        this.rightStick.gripMat.emissiveIntensity = 0.55;
+      } else {
+        rollThrust.copy(this.rightStick.getAxes());
+        if (!this.rightStick.pressedBy && !this.rightStick.hovered) this.rightStick.gripMat.emissiveIntensity = 0;
+      }
+    } else {
+      this._gripArmed.left = this._gripArmed.right = false;
+      pitchYaw.copy(this.leftStick.getAxes());
+      rollThrust.copy(this.rightStick.getAxes());
+    }
+
+    return { pitchYaw, rollThrust, pads };
+  }
+
   update(dt) {
     super.update(dt);
     if (!this.locked) {
-      this.ship.steer(dt, { pitchYaw: this.leftStick.getAxes(), rollThrust: this.rightStick.getAxes() });
+      const { pitchYaw, rollThrust } = this._flightAxes();
+      this.ship.steer(dt, { pitchYaw, rollThrust });
       if (!this.throttle.pressedBy) this.throttle.setValue(this.ship.throttle, true);
     }
     const thrustOk = this.ship.power.THRUSTERS && this.ship.breakers.THRUSTERS && this.ship.breakers.MAIN;
@@ -114,6 +162,15 @@ export class HelmStation extends StationBase {
     p.header('FLIGHT HUD', this.tintHex());
     const cx = w / 2;
     const cy = h / 2 + 20;
+
+    // Grip-arm status (Quest) or desktop grab hint
+    const inXR = this.interaction.xr.inXR;
+    if (inXR) {
+      const l = this._gripArmed.left;
+      const r = this._gripArmed.right;
+      p.text(l ? 'L GRIP · FLY' : 'L GRIP TO ARM', 14, 48, { size: 13, color: l ? PALETTE.green : PALETTE.screenDim, weight: l ? 'bold' : 'normal' });
+      p.text(r ? 'R GRIP · FLY' : 'R GRIP TO ARM', w - 14, 48, { size: 13, align: 'right', color: r ? PALETTE.green : PALETTE.screenDim, weight: r ? 'bold' : 'normal' });
+    }
 
     // Bearing tape
     ctx.strokeStyle = PALETTE.screenDim;
@@ -206,6 +263,17 @@ export class HelmStation extends StationBase {
     const thrustOk = this.ship.power.THRUSTERS && this.ship.breakers.THRUSTERS && this.ship.breakers.MAIN;
     p.text(thrustOk ? 'THRUSTERS NOMINAL' : 'THRUSTERS UNPOWERED', w - 20, h - 62, { size: 14, align: 'right', color: thrustOk ? PALETTE.green : PALETTE.red });
   }
+}
+
+/** Deadzone + soft curve for Quest thumbsticks (cleaner than hand-grab sticks). */
+function shapePad(pad, out = new THREE.Vector2()) {
+  const dead = 0.1;
+  const response = 1.35;
+  out.set(pad.x, pad.y);
+  const len = out.length();
+  if (len < dead) return out.set(0, 0);
+  const t = THREE.MathUtils.clamp((len - dead) / (1 - dead), 0, 1);
+  return out.multiplyScalar(Math.pow(t, response) / len);
 }
 
 function labelPlate(text) {

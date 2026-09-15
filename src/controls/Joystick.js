@@ -103,6 +103,20 @@ export class Joystick extends Interactable {
     this.gripMat.emissiveIntensity = this.hovered ? 0.25 : 0;
   }
 
+  /**
+   * Drive the stick from an external source (Quest thumbstick). Skips the
+   * spring for this frame so the mesh tracks the pad 1:1.
+   */
+  setAxes(x, y, { immediate = false } = {}) {
+    this.axes.set(x, y);
+    this._external = true;
+    if (immediate) {
+      this._smoothed.set(x, y);
+      this.gimbal.rotation.x = this._smoothed.y * this.maxTilt;
+      this.gimbal.rotation.z = -this._smoothed.x * this.maxTilt;
+    }
+  }
+
   /** Axes with deadzone + soft response curve applied. */
   getAxes() {
     const v = this._smoothed.clone();
@@ -113,12 +127,19 @@ export class Joystick extends Interactable {
     return v.multiplyScalar(shaped / len);
   }
 
+  /** Raw smoothed axes (no curve) — for HUD / follower debug. */
+  getRawAxes() {
+    return this._smoothed.clone();
+  }
+
   update(dt) {
-    if (!this.pressedBy && this.spring) {
+    const external = this._external;
+    this._external = false;
+    if (!this.pressedBy && this.spring && !external) {
       this.axes.lerp(new THREE.Vector2(0, 0), Math.min(1, dt * 6));
     }
-    // Low-pass the stick so tiny hand jitter doesn't flick the ship.
-    this._smoothed.lerp(this.axes, Math.min(1, dt * 8));
+    // External pad drives are already clean — catch up faster than hand grab.
+    this._smoothed.lerp(this.axes, Math.min(1, dt * (external ? 18 : 8)));
     // Visual follows hand: negative Y (push forward) → negative rotation.x → tip toward -Z.
     this.gimbal.rotation.x = this._smoothed.y * this.maxTilt;
     this.gimbal.rotation.z = -this._smoothed.x * this.maxTilt;

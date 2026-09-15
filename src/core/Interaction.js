@@ -63,10 +63,10 @@ export class InteractionManager {
 
     for (const c of xrRig.controllers) {
       const p = this._makePointer(`controller${c.userData.index}`, c);
+      // Trigger (select) grabs diegetic controls. Grip (squeeze) is reserved
+      // for Helm flight arming so holding a stick pad doesn't steal the throttle.
       c.addEventListener('selectstart', () => this._press(p));
       c.addEventListener('selectend', () => this._release(p));
-      c.addEventListener('squeezestart', () => this._press(p));
-      c.addEventListener('squeezeend', () => this._release(p));
       c.addEventListener('connected', (e) => (p.inputSource = e.data));
       c.addEventListener('disconnected', () => (p.inputSource = null));
     }
